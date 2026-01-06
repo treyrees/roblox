@@ -447,12 +447,8 @@ local function updateMovement(dt)
             state.velocity = state.velocity:Lerp(targetVelocity, smoothing)
         end
     else
-        local airInfluence = facingDir * state.turnInput * Config.AIR_CONTROL * state.currentSpeed * dt * 60
-        state.velocity = Vector3.new(
-            state.velocity.X + airInfluence.X,
-            0,
-            state.velocity.Z + airInfluence.Z
-        )
+        -- In air: preserve horizontal momentum, turning changes facing direction only
+        state.velocity = Vector3.new(state.velocity.X, 0, state.velocity.Z)
     end
 
     -- Apply gravity when in air
@@ -474,8 +470,8 @@ local function updateMovement(dt)
     local movement = state.velocity * dt
     local verticalMovement = state.verticalVelocity * dt
 
-    -- Ground check for landing
-    if state.verticalVelocity < 0 then
+    -- Ground check for landing (skip during grace period to prevent false landings)
+    if state.verticalVelocity < 0 and state.jumpGraceTimer <= 0 then
         local rayParams = RaycastParams.new()
         rayParams.FilterDescendantsInstances = {horse, state.character}
         rayParams.FilterType = Enum.RaycastFilterType.Exclude
@@ -485,6 +481,8 @@ local function updateMovement(dt)
             verticalMovement = result.Position.Y - currentPos.Y + 2 -- Keep horse above ground
             state.verticalVelocity = 0
             state.isGrounded = true
+            state.canDoubleJump = false
+            state.doubleJumpTurnTimer = 0
         end
     end
 
