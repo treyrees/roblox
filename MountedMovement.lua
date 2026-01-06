@@ -69,6 +69,11 @@ local Config = {
     -- Body Tilt
     MAX_TILT_ANGLE = 15,       -- Maximum lean angle in degrees
     TILT_SPEED = 8,            -- How fast tilt responds (higher = snappier)
+
+    -- Camera Follow
+    CAMERA_DISTANCE = 12,      -- Distance behind horse
+    CAMERA_HEIGHT = 6,         -- Height above horse
+    CAMERA_SMOOTH = 8,         -- How fast camera follows (higher = snappier)
 }
 
 -- ============================================
@@ -112,6 +117,9 @@ local state = {
     canDoubleJump = false,     -- Whether double jump is available
     doubleJumpTurnTimer = 0,   -- Remaining enhanced air turn time
     jumpGraceTimer = 0,        -- Grace period after jumping to prevent false landing detection
+
+    -- Camera
+    cameraAngle = 0,           -- Smoothed camera angle (follows facing)
 
     -- References
     character = nil,
@@ -197,10 +205,10 @@ local function getInput()
         move = move - 1
     end
     if UserInputService:IsKeyDown(Enum.KeyCode.D) then
-        turn = turn + 1
+        turn = turn - 1  -- D = turn right (negative rotation in Roblox coords)
     end
     if UserInputService:IsKeyDown(Enum.KeyCode.A) then
-        turn = turn - 1
+        turn = turn + 1  -- A = turn left (positive rotation in Roblox coords)
     end
 
     return move, turn
@@ -543,7 +551,8 @@ local function setupCharacter(character)
     -- Initialize facing angle from current orientation
     local _, y, _ = state.rootPart.CFrame:ToEulerAnglesYXZ()
     state.facingAngle = y
-    
+    state.cameraAngle = y  -- Start camera behind horse
+
     -- Reset state
     state.currentSpeed = 0
     state.stamina = Config.MAX_STAMINA
@@ -688,9 +697,43 @@ local function updateUI()
 end
 
 -- ============================================
+-- CAMERA FOLLOW
+-- ============================================
+local function updateCamera(dt)
+    if not state.rootPart then return end
+
+    -- Smoothly follow the horse's facing angle
+    local angleDiff = state.facingAngle - state.cameraAngle
+
+    -- Normalize angle difference to [-pi, pi]
+    while angleDiff > math.pi do angleDiff = angleDiff - (2 * math.pi) end
+    while angleDiff < -math.pi do angleDiff = angleDiff + (2 * math.pi) end
+
+    -- Smooth camera rotation
+    local smoothing = 1 - math.exp(-Config.CAMERA_SMOOTH * dt)
+    state.cameraAngle = state.cameraAngle + angleDiff * smoothing
+
+    -- Calculate camera position behind horse
+    local horsePos = state.rootPart.Position
+    local behindOffset = Vector3.new(
+        math.sin(state.cameraAngle) * Config.CAMERA_DISTANCE,
+        Config.CAMERA_HEIGHT,
+        math.cos(state.cameraAngle) * Config.CAMERA_DISTANCE
+    )
+
+    local cameraPos = horsePos + behindOffset
+    local lookAt = horsePos + Vector3.new(0, 2, 0)  -- Look at horse's upper body
+
+    camera.CFrame = CFrame.lookAt(cameraPos, lookAt)
+end
+
+-- ============================================
 -- MAIN LOOP
 -- ============================================
 bindInputs()
+
+-- Set camera to Scriptable for manual control
+camera.CameraType = Enum.CameraType.Scriptable
 
 if player.Character then
     setupCharacter(player.Character)
@@ -699,6 +742,7 @@ end
 player.CharacterAdded:Connect(setupCharacter)
 player.CharacterRemoving:Connect(function()
     unbindInputs()
+    camera.CameraType = Enum.CameraType.Custom  -- Restore default camera
     state.character = nil
     state.humanoid = nil
     state.rootPart = nil
@@ -711,5 +755,6 @@ RunService.RenderStepped:Connect(function(dt)
     updateStamina(dt)
     updateMovement(dt)
     handleJump()
+    updateCamera(dt)
     updateUI()
 end)
