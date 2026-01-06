@@ -447,13 +447,8 @@ local function updateMovement(dt)
             state.velocity = state.velocity:Lerp(targetVelocity, smoothing)
         end
     else
-        -- Air control: W/S lets you accelerate/brake slightly, turning just changes direction
-        local airInfluence = facingDir * state.moveInput * Config.AIR_CONTROL * state.currentSpeed * dt * 60
-        state.velocity = Vector3.new(
-            state.velocity.X + airInfluence.X,
-            0,
-            state.velocity.Z + airInfluence.Z
-        )
+        -- In air: preserve horizontal momentum, turning changes facing direction only
+        state.velocity = Vector3.new(state.velocity.X, 0, state.velocity.Z)
     end
 
     -- Apply gravity when in air
