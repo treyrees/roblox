@@ -23,7 +23,7 @@ local camera = workspace.CurrentCamera
 local Config = {
     -- Speed
     BASE_SPEED = 28,           -- Walking speed
-    SPRINT_SPEED = 52,         -- Full gallop
+    SPRINT_SPEED = 84,         -- Full gallop (3x base speed)
     ACCELERATION = 2.5,        -- How fast you reach target speed (per second, multiplied)
     DECELERATION = 4.0,        -- How fast you slow down when not pressing forward
     EMPTY_STAMINA_PENALTY = 0.7, -- Speed multiplier when stamina bottoms out
