@@ -1,0 +1,407 @@
+--[[
+    MountedMovement.lua
+    Base prototype for horse-mounted racing movement
+    
+    Controls:
+    - WASD: Movement
+    - Shift: Sprint (hold)
+    - Space: Jump
+    - Q: Drift (hold while turning)
+]]
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local ContextActionService = game:GetService("ContextActionService")
+
+local player = Players.LocalPlayer
+local camera = workspace.CurrentCamera
+
+-- ============================================
+-- TUNING VALUES (tweak these)
+-- ============================================
+local Config = {
+    -- Speed
+    BASE_SPEED = 28,           -- Walking speed
+    SPRINT_SPEED = 52,         -- Full gallop
+    ACCELERATION = 2.5,        -- How fast you reach target speed (per second, multiplied)
+    DECELERATION = 4.0,        -- How fast you slow down when not pressing forward
+    EMPTY_STAMINA_PENALTY = 0.7, -- Speed multiplier when stamina bottoms out
+    
+    -- Stamina
+    MAX_STAMINA = 100,
+    SPRINT_DRAIN = 15,         -- Per second while sprinting
+    JUMP_COST = 20,            -- Flat cost per jump
+    REGEN_RATE = 12,           -- Per second when not sprinting
+    REGEN_DELAY = 0.5,         -- Seconds before regen starts
+    EMPTY_PENALTY_DURATION = 2, -- Seconds of penalty when emptied
+    
+    -- Turning
+    BASE_TURN_RATE = 8.0,      -- Degrees per frame at low speed
+    MIN_TURN_RATE = 2.5,       -- Degrees per frame at max speed
+    DRIFT_TURN_BONUS = 2.0,    -- Multiplier to turn rate while drifting
+    DRIFT_SPEED_RETAIN = 0.85, -- Speed retention while drifting (vs braking)
+    DRIFT_STAMINA_DRAIN = 8,   -- Additional stamina drain per second while drifting
+    
+    -- Jumping
+    JUMP_POWER = 55,
+    AIR_TURN_RATE = 0.25,      -- Degrees per frame in air (~15°/sec at 60fps)
+    AIR_CONTROL = 0.15,        -- How much you can influence air velocity (0-1)
+    
+    -- Feel
+    MOMENTUM_FACTOR = 0.92,    -- How much velocity carries frame-to-frame (0.9-0.99)
+}
+
+-- ============================================
+-- STATE
+-- ============================================
+local state = {
+    -- Input
+    moveDirection = Vector3.zero,
+    isSprinting = false,
+    isDrifting = false,
+    jumpRequested = false,
+    
+    -- Physics
+    currentSpeed = 0,
+    facingAngle = 0,           -- Radians, world Y rotation
+    velocity = Vector3.zero,
+    isGrounded = true,
+    
+    -- Stamina
+    stamina = Config.MAX_STAMINA,
+    regenTimer = 0,
+    penaltyTimer = 0,
+    
+    -- References
+    character = nil,
+    humanoid = nil,
+    rootPart = nil,
+}
+
+-- ============================================
+-- INPUT HANDLING
+-- ============================================
+local function bindInputs()
+    -- Sprint
+    ContextActionService:BindAction("Sprint", function(_, inputState)
+        state.isSprinting = (inputState == Enum.UserInputState.Begin)
+        return Enum.ContextActionResult.Pass
+    end, false, Enum.KeyCode.LeftShift)
+    
+    -- Drift
+    ContextActionService:BindAction("Drift", function(_, inputState)
+        state.isDrifting = (inputState == Enum.UserInputState.Begin)
+        return Enum.ContextActionResult.Pass
+    end, false, Enum.KeyCode.Q)
+    
+    -- Jump
+    ContextActionService:BindAction("Jump", function(_, inputState)
+        if inputState == Enum.UserInputState.Begin then
+            state.jumpRequested = true
+        end
+        return Enum.ContextActionResult.Pass
+    end, false, Enum.KeyCode.Space)
+end
+
+local function getMoveDirection()
+    -- Camera-relative movement input
+    local forward = camera.CFrame.LookVector
+    local right = camera.CFrame.RightVector
+    
+    -- Flatten to horizontal plane
+    forward = Vector3.new(forward.X, 0, forward.Z).Unit
+    right = Vector3.new(right.X, 0, right.Z).Unit
+    
+    local direction = Vector3.zero
+    
+    if UserInputService:IsKeyDown(Enum.KeyCode.W) then
+        direction = direction + forward
+    end
+    if UserInputService:IsKeyDown(Enum.KeyCode.S) then
+        direction = direction - forward
+    end
+    if UserInputService:IsKeyDown(Enum.KeyCode.D) then
+        direction = direction + right
+    end
+    if UserInputService:IsKeyDown(Enum.KeyCode.A) then
+        direction = direction - right
+    end
+    
+    if direction.Magnitude > 0 then
+        direction = direction.Unit
+    end
+    
+    return direction
+end
+
+-- ============================================
+-- STAMINA SYSTEM
+-- ============================================
+local function updateStamina(dt)
+    local draining = false
+    
+    -- Sprint drain
+    if state.isSprinting and state.moveDirection.Magnitude > 0 and state.isGrounded then
+        state.stamina = state.stamina - (Config.SPRINT_DRAIN * dt)
+        draining = true
+    end
+    
+    -- Drift drain (additional)
+    if state.isDrifting and state.isSprinting and state.moveDirection.Magnitude > 0 then
+        state.stamina = state.stamina - (Config.DRIFT_STAMINA_DRAIN * dt)
+        draining = true
+    end
+    
+    -- Check for empty
+    if state.stamina <= 0 then
+        state.stamina = 0
+        state.penaltyTimer = Config.EMPTY_PENALTY_DURATION
+    end
+    
+    -- Penalty countdown
+    if state.penaltyTimer > 0 then
+        state.penaltyTimer = state.penaltyTimer - dt
+    end
+    
+    -- Regeneration
+    if draining then
+        state.regenTimer = Config.REGEN_DELAY
+    else
+        state.regenTimer = math.max(0, state.regenTimer - dt)
+        if state.regenTimer <= 0 and state.penaltyTimer <= 0 then
+            state.stamina = math.min(Config.MAX_STAMINA, state.stamina + (Config.REGEN_RATE * dt))
+        end
+    end
+end
+
+-- ============================================
+-- MOVEMENT PHYSICS
+-- ============================================
+local function calculateTargetSpeed()
+    if state.moveDirection.Magnitude == 0 then
+        return 0
+    end
+    
+    local target = Config.BASE_SPEED
+    
+    -- Sprint speed (only if stamina available)
+    if state.isSprinting and state.stamina > 0 and state.penaltyTimer <= 0 then
+        target = Config.SPRINT_SPEED
+    end
+    
+    -- Empty stamina penalty
+    if state.penaltyTimer > 0 then
+        target = target * Config.EMPTY_STAMINA_PENALTY
+    end
+    
+    -- Drift speed retention (slower than full sprint, faster than braking)
+    if state.isDrifting and state.isSprinting then
+        target = target * Config.DRIFT_SPEED_RETAIN
+    end
+    
+    return target
+end
+
+local function calculateTurnRate()
+    -- Turn rate decreases with speed
+    local speedRatio = state.currentSpeed / Config.SPRINT_SPEED
+    local turnRate = Config.BASE_TURN_RATE - (speedRatio * (Config.BASE_TURN_RATE - Config.MIN_TURN_RATE))
+    
+    -- Drift bonus
+    if state.isDrifting and state.isSprinting and state.isGrounded then
+        turnRate = turnRate * Config.DRIFT_TURN_BONUS
+    end
+    
+    -- Air penalty
+    if not state.isGrounded then
+        turnRate = Config.AIR_TURN_RATE
+    end
+    
+    return math.rad(turnRate) -- Convert to radians
+end
+
+local function updateGroundedState()
+    if not state.rootPart then return end
+    
+    -- Raycast downward to check ground
+    local rayOrigin = state.rootPart.Position
+    local rayDirection = Vector3.new(0, -4, 0)
+    local rayParams = RaycastParams.new()
+    rayParams.FilterDescendantsInstances = {state.character}
+    rayParams.FilterType = Enum.RaycastFilterType.Exclude
+    
+    local result = workspace:Raycast(rayOrigin, rayDirection, rayParams)
+    state.isGrounded = (result ~= nil)
+end
+
+local function updateMovement(dt)
+    if not state.rootPart or not state.humanoid then return end
+    
+    state.moveDirection = getMoveDirection()
+    updateGroundedState()
+    
+    -- Target speed
+    local targetSpeed = calculateTargetSpeed()
+    
+    -- Accelerate/decelerate toward target
+    if targetSpeed > state.currentSpeed then
+        state.currentSpeed = state.currentSpeed + (Config.ACCELERATION * dt * (targetSpeed - state.currentSpeed))
+    else
+        state.currentSpeed = state.currentSpeed - (Config.DECELERATION * dt * (state.currentSpeed - targetSpeed))
+    end
+    state.currentSpeed = math.max(0, state.currentSpeed)
+    
+    -- Turning (only when moving)
+    if state.moveDirection.Magnitude > 0 then
+        local targetAngle = math.atan2(-state.moveDirection.X, -state.moveDirection.Z)
+        local angleDiff = targetAngle - state.facingAngle
+        
+        -- Normalize angle difference to [-pi, pi]
+        while angleDiff > math.pi do angleDiff = angleDiff - (2 * math.pi) end
+        while angleDiff < -math.pi do angleDiff = angleDiff + (2 * math.pi) end
+        
+        -- Apply turn rate limit
+        local maxTurn = calculateTurnRate()
+        angleDiff = math.clamp(angleDiff, -maxTurn, maxTurn)
+        state.facingAngle = state.facingAngle + angleDiff
+    end
+    
+    -- Calculate velocity from facing angle and speed
+    local facingDir = Vector3.new(-math.sin(state.facingAngle), 0, -math.cos(state.facingAngle))
+    local targetVelocity = facingDir * state.currentSpeed
+    
+    -- Apply momentum (smoothing)
+    if state.isGrounded then
+        state.velocity = state.velocity:Lerp(targetVelocity, 1 - Config.MOMENTUM_FACTOR)
+    else
+        -- In air: limited control
+        local airInfluence = state.moveDirection * Config.AIR_CONTROL * state.currentSpeed
+        state.velocity = Vector3.new(
+            state.velocity.X + airInfluence.X,
+            0, -- Y handled by humanoid
+            state.velocity.Z + airInfluence.Z
+        )
+    end
+    
+    -- Apply to humanoid
+    state.humanoid:Move(state.velocity / Config.BASE_SPEED, false)
+    
+    -- Rotate character to face movement direction
+    if state.currentSpeed > 1 then
+        state.rootPart.CFrame = CFrame.new(state.rootPart.Position) * CFrame.Angles(0, state.facingAngle, 0)
+    end
+end
+
+local function handleJump()
+    if not state.jumpRequested then return end
+    state.jumpRequested = false
+    
+    if not state.isGrounded then return end
+    if state.stamina < Config.JUMP_COST and state.penaltyTimer <= 0 then return end
+    
+    -- Deduct stamina
+    if state.penaltyTimer <= 0 then
+        state.stamina = state.stamina - Config.JUMP_COST
+    end
+    
+    -- Execute jump
+    if state.humanoid then
+        state.humanoid.JumpPower = Config.JUMP_POWER
+        state.humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+    end
+end
+
+-- ============================================
+-- CHARACTER SETUP
+-- ============================================
+local function setupCharacter(character)
+    state.character = character
+    state.humanoid = character:WaitForChild("Humanoid")
+    state.rootPart = character:WaitForChild("HumanoidRootPart")
+    
+    -- Disable default jump (we handle it)
+    state.humanoid.JumpPower = 0
+    state.humanoid.JumpHeight = 0
+    
+    -- Initialize facing angle from current orientation
+    local _, y, _ = state.rootPart.CFrame:ToEulerAnglesYXZ()
+    state.facingAngle = y
+    
+    -- Reset state
+    state.currentSpeed = 0
+    state.stamina = Config.MAX_STAMINA
+    state.penaltyTimer = 0
+    state.regenTimer = 0
+    state.velocity = Vector3.zero
+end
+
+-- ============================================
+-- UI (simple stamina display)
+-- ============================================
+local function createStaminaUI()
+    local screenGui = Instance.new("ScreenGui")
+    screenGui.Name = "StaminaUI"
+    screenGui.ResetOnSpawn = false
+    screenGui.Parent = player.PlayerGui
+    
+    local frame = Instance.new("Frame")
+    frame.Name = "StaminaBar"
+    frame.Size = UDim2.new(0, 200, 0, 20)
+    frame.Position = UDim2.new(0.5, -100, 1, -50)
+    frame.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+    frame.BorderSizePixel = 0
+    frame.Parent = screenGui
+    
+    local fill = Instance.new("Frame")
+    fill.Name = "Fill"
+    fill.Size = UDim2.new(1, 0, 1, 0)
+    fill.BackgroundColor3 = Color3.fromRGB(50, 200, 80)
+    fill.BorderSizePixel = 0
+    fill.Parent = frame
+    
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 4)
+    corner.Parent = frame
+    
+    local corner2 = Instance.new("UICorner")
+    corner2.CornerRadius = UDim.new(0, 4)
+    corner2.Parent = fill
+    
+    return fill
+end
+
+local staminaFill = createStaminaUI()
+
+local function updateUI()
+    local ratio = state.stamina / Config.MAX_STAMINA
+    staminaFill.Size = UDim2.new(ratio, 0, 1, 0)
+    
+    -- Color feedback
+    if state.penaltyTimer > 0 then
+        staminaFill.BackgroundColor3 = Color3.fromRGB(200, 50, 50) -- Red when penalized
+    elseif ratio < 0.3 then
+        staminaFill.BackgroundColor3 = Color3.fromRGB(200, 150, 50) -- Yellow when low
+    else
+        staminaFill.BackgroundColor3 = Color3.fromRGB(50, 200, 80) -- Green normally
+    end
+end
+
+-- ============================================
+-- MAIN LOOP
+-- ============================================
+bindInputs()
+
+if player.Character then
+    setupCharacter(player.Character)
+end
+player.CharacterAdded:Connect(setupCharacter)
+
+RunService.RenderStepped:Connect(function(dt)
+    if not state.humanoid then return end
+    
+    updateStamina(dt)
+    updateMovement(dt)
+    handleJump()
+    updateUI()
+end)
