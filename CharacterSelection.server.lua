@@ -3,10 +3,12 @@
     Server script to handle character selection and spawning
     Place in ServerScriptService
 
-    Fixes:
-    - Properly clones character models with clothing (Shirt/Pants)
-    - Adds Animate script for humanoid run animations
-    - Handles character appearance (BodyColors, Accessories)
+    Features:
+    - Applies clothing (Shirt/Pants) from character templates to player
+    - Keeps player's original skin/face (dressing up, not replacing)
+    - Works on initial selection and respawn
+
+    TODO: Add accessory support
 ]]
 
 local Players = game:GetService("Players")
@@ -56,13 +58,6 @@ local function applyAppearance(template, character)
     -- Wait for character to fully load
     if not character:FindFirstChild("HumanoidRootPart") then
         character:WaitForChild("HumanoidRootPart")
-    end
-
-    -- Remove ALL existing accessories first
-    for _, item in pairs(character:GetChildren()) do
-        if item:IsA("Accessory") then
-            item:Destroy()
-        end
     end
 
     -- Try to get HumanoidDescription from template (modern approach)
@@ -117,17 +112,7 @@ local function applyAppearance(template, character)
         end
     end
 
-    -- Clone Accessories (works reliably via AddAccessory API)
-    local accessoryCount = 0
-    for _, item in pairs(template:GetChildren()) do
-        if item:IsA("Accessory") then
-            local newAccessory = item:Clone()
-            humanoid:AddAccessory(newAccessory)
-            accessoryCount = accessoryCount + 1
-            print("[CharacterSelection] Applied Accessory:", item.Name)
-        end
-    end
-    print("[CharacterSelection] Applied", accessoryCount, "accessories")
+    -- TODO: Add accessory support (hats, etc.)
 end
 
 -- Spawn player as selected character
