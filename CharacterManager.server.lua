@@ -65,9 +65,105 @@ local function applyCharacterModel(player, characterId)
     local character = player.Character
     if not character then return false end
 
-    -- For now, skip model replacement - just use default avatar with stats
-    -- TODO: Implement proper R6 model replacement once models have correct joint structure
-    print("[CharacterManager] Using default avatar for", characterId, "(model swap disabled)")
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    if not humanoid then return false end
+
+    local rootPart = character:FindFirstChild("HumanoidRootPart")
+    if not rootPart then return false end
+
+    -- Remove any existing costume overlay
+    local existingCostume = character:FindFirstChild("CostumeOverlay")
+    if existingCostume then
+        existingCostume:Destroy()
+    end
+
+    -- Get the character model template
+    local costumeModel = getCharacterModel(characterId)
+    if not costumeModel then
+        print("[CharacterManager] No model found, keeping default avatar for", characterId)
+        -- Show default avatar parts if no costume
+        for _, part in ipairs(character:GetDescendants()) do
+            if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
+                part.Transparency = 0
+            end
+        end
+        return true
+    end
+
+    -- Hide the default avatar (but keep it functional)
+    for _, part in ipairs(character:GetDescendants()) do
+        if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
+            part.Transparency = 1
+        end
+        if part:IsA("Accessory") or part:IsA("Shirt") or part:IsA("Pants") or part:IsA("BodyColors") then
+            part:Destroy()
+        end
+    end
+
+    -- Also hide face
+    local head = character:FindFirstChild("Head")
+    if head then
+        local face = head:FindFirstChild("face") or head:FindFirstChildOfClass("Decal")
+        if face then
+            face.Transparency = 1
+        end
+    end
+
+    -- Prepare the costume model
+    costumeModel.Name = "CostumeOverlay"
+
+    -- Unanchor all parts and make them non-collidable
+    for _, part in ipairs(costumeModel:GetDescendants()) do
+        if part:IsA("BasePart") then
+            part.Anchored = false
+            part.CanCollide = false
+            part.Massless = true
+        end
+    end
+
+    -- Find the costume's root (Torso or HumanoidRootPart)
+    local costumeRoot = costumeModel:FindFirstChild("HumanoidRootPart")
+        or costumeModel:FindFirstChild("Torso")
+        or costumeModel.PrimaryPart
+
+    if not costumeRoot then
+        -- Just use the first part
+        for _, part in ipairs(costumeModel:GetDescendants()) do
+            if part:IsA("BasePart") then
+                costumeRoot = part
+                break
+            end
+        end
+    end
+
+    if not costumeRoot then
+        warn("[CharacterManager] Costume has no parts!")
+        return false
+    end
+
+    -- Remove the costume's humanoid (we don't need it)
+    local costumeHumanoid = costumeModel:FindFirstChildOfClass("Humanoid")
+    if costumeHumanoid then
+        costumeHumanoid:Destroy()
+    end
+
+    -- Parent costume to character
+    costumeModel.Parent = character
+
+    -- Weld costume to player's HumanoidRootPart
+    local weld = Instance.new("Weld")
+    weld.Name = "CostumeWeld"
+    weld.Part0 = rootPart
+    weld.Part1 = costumeRoot
+    -- Offset if needed (adjust Y if costume sits too high/low)
+    weld.C0 = CFrame.new(0, 0, 0)
+    weld.C1 = CFrame.new(0, 0, 0)
+    weld.Parent = rootPart
+
+    -- Store reference
+    playerCharacterModels[player] = costumeModel
+
+    print("[CharacterManager] Applied costume overlay:", characterId, "to", player.Name)
     return true
 end
 
