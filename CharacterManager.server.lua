@@ -61,6 +61,23 @@ local function getCharacterModel(characterId)
     return model:Clone()
 end
 
+-- R6 body part names (what our costume models use)
+local R6_PARTS = {"Head", "Torso", "Left Arm", "Right Arm", "Left Leg", "Right Leg", "HumanoidRootPart"}
+
+-- Map R6 costume parts to R15 player parts (if player is R15)
+local R6_TO_R15_MAP = {
+    ["Torso"] = "UpperTorso",
+    ["Left Arm"] = "LeftUpperArm",
+    ["Right Arm"] = "RightUpperArm",
+    ["Left Leg"] = "LeftUpperLeg",
+    ["Right Leg"] = "RightUpperLeg",
+}
+
+-- Check if character is R15 (has UpperTorso) or R6 (has Torso)
+local function isR15(character)
+    return character:FindFirstChild("UpperTorso") ~= nil
+end
+
 local function applyCharacterModel(player, characterId)
     local character = player.Character
     if not character then return false end
@@ -81,107 +98,52 @@ local function applyCharacterModel(player, characterId)
     local costumeModel = getCharacterModel(characterId)
     if not costumeModel then
         print("[CharacterManager] No model found, keeping default avatar for", characterId)
-        -- Show default avatar parts if no costume
-        for _, part in ipairs(character:GetDescendants()) do
-            if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
-                part.Transparency = 0
-            end
-        end
         return true
     end
 
-    -- Hide the default avatar (but keep it functional)
-    for _, part in ipairs(character:GetDescendants()) do
-        if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
-            part.Transparency = 1
-        end
-        if part:IsA("Accessory") or part:IsA("Shirt") or part:IsA("Pants") or part:IsA("BodyColors") then
-            part:Destroy()
+    -- Remove player's existing accessories and clothing (we'll apply costume's)
+    for _, item in ipairs(character:GetDescendants()) do
+        if item:IsA("Accessory") or item:IsA("Shirt") or item:IsA("Pants") or item:IsA("BodyColors") then
+            item:Destroy()
         end
     end
 
-    -- Also hide face
-    local head = character:FindFirstChild("Head")
-    if head then
-        local face = head:FindFirstChild("face") or head:FindFirstChildOfClass("Decal")
-        if face then
-            face.Transparency = 1
-        end
+    -- Apply clothing from costume to player (renders on player's visible body)
+    local costumeShirt = costumeModel:FindFirstChildOfClass("Shirt")
+    if costumeShirt then
+        costumeShirt:Clone().Parent = character
     end
 
-    -- Prepare the costume model
-    costumeModel.Name = "CostumeOverlay"
-
-    -- Unanchor all parts and make them non-collidable
-    for _, part in ipairs(costumeModel:GetDescendants()) do
-        if part:IsA("BasePart") then
-            part.Anchored = false
-            part.CanCollide = false
-            part.Massless = true
-        end
+    local costumePants = costumeModel:FindFirstChildOfClass("Pants")
+    if costumePants then
+        costumePants:Clone().Parent = character
     end
 
-    -- Find the costume's root (Torso or HumanoidRootPart)
-    local costumeRoot = costumeModel:FindFirstChild("HumanoidRootPart")
-        or costumeModel:FindFirstChild("Torso")
-        or costumeModel.PrimaryPart
-
-    if not costumeRoot then
-        -- Just use the first part
-        for _, part in ipairs(costumeModel:GetDescendants()) do
-            if part:IsA("BasePart") then
-                costumeRoot = part
-                break
-            end
-        end
+    -- Apply body colors from costume if present
+    local costumeBodyColors = costumeModel:FindFirstChildOfClass("BodyColors")
+    if costumeBodyColors then
+        costumeBodyColors:Clone().Parent = character
     end
 
-    if not costumeRoot then
-        warn("[CharacterManager] Costume has no parts!")
-        return false
-    end
+    -- Now handle accessories from costume (hats, hair, etc.)
+    -- These get welded to the player as overlays
+    local accessoryContainer = Instance.new("Folder")
+    accessoryContainer.Name = "CostumeOverlay"
+    accessoryContainer.Parent = character
 
-    -- Remove the costume's humanoid (we don't need it)
-    local costumeHumanoid = costumeModel:FindFirstChildOfClass("Humanoid")
-    if costumeHumanoid then
-        costumeHumanoid:Destroy()
-    end
-
-    -- Set PrimaryPart for positioning
-    costumeModel.PrimaryPart = costumeRoot
-
-    -- Position costume at player's location before welding
-    costumeModel:PivotTo(rootPart.CFrame)
-
-    -- Parent costume to character
-    costumeModel.Parent = character
-
-    -- Weld ALL costume parts to player's HumanoidRootPart
-    -- This ensures the entire costume moves as one unit with the player
-    for _, part in ipairs(costumeModel:GetDescendants()) do
-        if part:IsA("BasePart") then
-            -- Remove any existing AccessoryWeld (for Accessory Handles)
-            local existingWeld = part:FindFirstChild("AccessoryWeld")
-            if existingWeld then
-                existingWeld:Destroy()
-            end
-
-            local weld = Instance.new("Weld")
-            weld.Name = "CostumeWeld_" .. part.Name
-            weld.Part0 = rootPart
-            weld.Part1 = part
-            -- C0 = offset from rootPart to where part currently is
-            -- C1 = identity (part stays at its current relative position)
-            weld.C0 = rootPart.CFrame:ToObjectSpace(part.CFrame)
-            weld.C1 = CFrame.new(0, 0, 0)
-            weld.Parent = part
+    -- Clone and apply accessories from costume model
+    for _, item in ipairs(costumeModel:GetChildren()) do
+        if item:IsA("Accessory") then
+            local accessory = item:Clone()
+            -- Let Roblox's accessory system handle attachment
+            accessory.Parent = character
         end
     end
 
     -- Store reference
-    playerCharacterModels[player] = costumeModel
+    playerCharacterModels[player] = accessoryContainer
 
-    print("[CharacterManager] Applied costume overlay:", characterId, "to", player.Name)
+    print("[CharacterManager] Applied costume:", characterId, "to", player.Name)
     return true
 end
 
