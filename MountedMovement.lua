@@ -2,12 +2,13 @@
     MountedMovement.lua
     Horse-mounted racing movement with burst, body tilt, and double jump
 
-    Controls:
-    - WASD: Movement
-    - Shift: Sprint (hold)
+    Controls (Tank Style):
+    - W/S: Move forward/backward
+    - A/D: Turn left/right
+    - Shift: Sprint (hold, forward only)
     - Shift (double-tap): Burst (speed boost, costs stamina)
     - Space: Jump (press again in air for double jump with enhanced turning)
-    - Q: Drift (hold while turning)
+    - Q: Drift (hold to lock momentum, turn to aim, release for sharp turn)
 ]]
 
 local Players = game:GetService("Players")
@@ -75,7 +76,8 @@ local Config = {
 -- ============================================
 local state = {
     -- Input
-    moveDirection = Vector3.zero,
+    moveInput = 0,             -- Forward/back input (-1 to 1)
+    turnInput = 0,             -- Turn input (-1 = left, 1 = right)
     isSprinting = false,
     isDrifting = false,
     jumpRequested = false,
@@ -183,35 +185,25 @@ local function unbindInputs()
     state.burstTimer = 0
 end
 
-local function getMoveDirection()
-    -- Camera-relative movement input
-    local forward = camera.CFrame.LookVector
-    local right = camera.CFrame.RightVector
-    
-    -- Flatten to horizontal plane
-    forward = Vector3.new(forward.X, 0, forward.Z).Unit
-    right = Vector3.new(right.X, 0, right.Z).Unit
-    
-    local direction = Vector3.zero
-    
+local function getInput()
+    -- Tank controls: W/S for forward/back, A/D for turning
+    local move = 0
+    local turn = 0
+
     if UserInputService:IsKeyDown(Enum.KeyCode.W) then
-        direction = direction + forward
+        move = move + 1
     end
     if UserInputService:IsKeyDown(Enum.KeyCode.S) then
-        direction = direction - forward
+        move = move - 1
     end
     if UserInputService:IsKeyDown(Enum.KeyCode.D) then
-        direction = direction + right
+        turn = turn + 1
     end
     if UserInputService:IsKeyDown(Enum.KeyCode.A) then
-        direction = direction - right
+        turn = turn - 1
     end
-    
-    if direction.Magnitude > 0 then
-        direction = direction.Unit
-    end
-    
-    return direction
+
+    return move, turn
 end
 
 -- ============================================
@@ -240,13 +232,13 @@ local function updateStamina(dt)
     local draining = false
 
     -- Sprint drain
-    if state.isSprinting and state.moveDirection.Magnitude > 0 and state.isGrounded then
+    if state.isSprinting and state.moveInput > 0 and state.isGrounded then
         state.stamina = state.stamina - (Config.SPRINT_DRAIN * dt)
         draining = true
     end
-    
+
     -- Drift drain (additional, only when grounded to match turn bonus)
-    if state.isDrifting and state.isSprinting and state.isGrounded and state.moveDirection.Magnitude > 0 then
+    if state.isDrifting and state.isSprinting and state.isGrounded and state.moveInput > 0 then
         state.stamina = state.stamina - (Config.DRIFT_STAMINA_DRAIN * dt)
         draining = true
     end
@@ -284,14 +276,15 @@ end
 -- MOVEMENT PHYSICS
 -- ============================================
 local function calculateTargetSpeed()
-    if state.moveDirection.Magnitude == 0 then
+    -- No forward/back input = no speed
+    if state.moveInput == 0 then
         return 0
     end
 
     local target = Config.BASE_SPEED
 
-    -- Sprint speed (only if stamina available)
-    if state.isSprinting and state.stamina > 0 and state.penaltyTimer <= 0 then
+    -- Sprint speed (only if stamina available and moving forward)
+    if state.isSprinting and state.stamina > 0 and state.penaltyTimer <= 0 and state.moveInput > 0 then
         target = Config.SPRINT_SPEED
     end
 
@@ -303,6 +296,11 @@ local function calculateTargetSpeed()
     -- Empty stamina penalty
     if state.penaltyTimer > 0 then
         target = target * Config.EMPTY_STAMINA_PENALTY
+    end
+
+    -- Backward movement is slower
+    if state.moveInput < 0 then
+        target = target * 0.5
     end
 
     return target
@@ -362,7 +360,8 @@ end
 local function updateMovement(dt)
     if not state.rootPart or not state.humanoid then return end
 
-    state.moveDirection = getMoveDirection()
+    -- Get tank control input (W/S = move, A/D = turn)
+    state.moveInput, state.turnInput = getInput()
     updateGroundedState()
 
     -- Update jump grace timer (prevents false landing detection after jumping)
@@ -374,10 +373,10 @@ local function updateMovement(dt)
     if state.doubleJumpTurnTimer > 0 then
         state.doubleJumpTurnTimer = state.doubleJumpTurnTimer - dt
     end
-    
+
     -- Target speed
     local targetSpeed = calculateTargetSpeed()
-    
+
     -- Accelerate/decelerate toward target
     if targetSpeed > state.currentSpeed then
         state.currentSpeed = state.currentSpeed + (Config.ACCELERATION * dt * (targetSpeed - state.currentSpeed))
@@ -385,29 +384,23 @@ local function updateMovement(dt)
         state.currentSpeed = state.currentSpeed - (Config.DECELERATION * dt * (state.currentSpeed - targetSpeed))
     end
     state.currentSpeed = math.max(0, state.currentSpeed)
-    
-    -- Turning (only when moving)
+
+    -- Turning (tank controls: A/D directly control rotation)
     local actualTurnRate = 0
-    if state.moveDirection.Magnitude > 0 then
-        local targetAngle = math.atan2(-state.moveDirection.X, -state.moveDirection.Z)
-        local angleDiff = targetAngle - state.facingAngle
-
-        -- Normalize angle difference to [-pi, pi]
-        while angleDiff > math.pi do angleDiff = angleDiff - (2 * math.pi) end
-        while angleDiff < -math.pi do angleDiff = angleDiff + (2 * math.pi) end
-
-        -- Apply turn rate limit (frame-rate independent)
+    if state.turnInput ~= 0 then
+        -- Get max turn rate for current state
         local maxTurn = calculateTurnRate(dt)
-        angleDiff = math.clamp(angleDiff, -maxTurn, maxTurn)
-        state.facingAngle = state.facingAngle + angleDiff
+        local turnAmount = state.turnInput * maxTurn
+
+        state.facingAngle = state.facingAngle + turnAmount
 
         -- Track turn rate for tilt (radians per second)
         if dt > 0 then
-            actualTurnRate = angleDiff / dt
+            actualTurnRate = turnAmount / dt
         end
     end
     state.turnRate = actualTurnRate
-    
+
     -- Calculate velocity from facing angle and speed
     local facingDir = Vector3.new(-math.sin(state.facingAngle), 0, -math.cos(state.facingAngle))
     local targetVelocity = facingDir * state.currentSpeed
@@ -446,8 +439,8 @@ local function updateMovement(dt)
             state.velocity = state.velocity:Lerp(targetVelocity, smoothing)
         end
     else
-        -- In air: limited control (also frame-rate independent)
-        local airInfluence = state.moveDirection * Config.AIR_CONTROL * state.currentSpeed * dt * 60
+        -- In air: limited control using facing direction
+        local airInfluence = facingDir * state.turnInput * Config.AIR_CONTROL * state.currentSpeed * dt * 60
         state.velocity = Vector3.new(
             state.velocity.X + airInfluence.X,
             0, -- Y handled by humanoid
