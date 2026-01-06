@@ -1,15 +1,23 @@
 --[[
     CharacterSelection.server.lua
-    Server script to handle character selection and spawning
-    Place in ServerScriptService
+    DEPRECATED - This script is disabled.
 
-    Features:
-    - Applies clothing (Shirt/Pants) from character templates to player
-    - Keeps player's original skin/face (dressing up, not replacing)
-    - Works on initial selection and respawn
+    Character selection is now handled by CharacterManager.server.lua which provides:
+    - Full costume overlay (not just clothing)
+    - GetCharacterData RemoteFunction for MountedMovement
+    - Proper welding for mounted gameplay
 
-    TODO: Add accessory support
+    This script was causing a race condition where both systems listened to the
+    same SelectCharacter event, causing inconsistent behavior (sometimes only
+    clothes changed, sometimes the full model changed).
+
+    Original features:
+    - Applied clothing (Shirt/Pants) from character templates to player
+    - Kept player's original skin/face (dressing up, not replacing)
+    - Worked on initial selection and respawn
 ]]
+
+do return end -- DISABLED: CharacterManager handles all character selection
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
