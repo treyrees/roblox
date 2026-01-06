@@ -776,6 +776,39 @@ end
 -- Maximum walkable slope angle (in degrees) - slopes steeper than this are walls
 local MAX_WALKABLE_SLOPE = 50
 
+-- ============================================
+-- TERRAIN SMOOTHING SYSTEM
+-- ============================================
+-- Sample terrain at multiple points for smoother ground-following
+local TERRAIN_SAMPLE_OFFSETS = {
+    Vector3.new(0, 0, 0),       -- Center
+    Vector3.new(1.5, 0, 0),     -- Right
+    Vector3.new(-1.5, 0, 0),    -- Left
+    Vector3.new(0, 0, 1.5),     -- Front
+    Vector3.new(0, 0, -1.5),    -- Back
+}
+
+-- Slope physics tuning
+local SLOPE_SPEED_UPHILL_PENALTY = 0.85    -- Speed multiplier when going uphill
+local SLOPE_SPEED_DOWNHILL_BONUS = 1.12    -- Speed multiplier when going downhill
+local SLOPE_SLIDE_THRESHOLD = 35           -- Degrees at which sliding begins
+local SLOPE_SLIDE_FORCE = 8                -- Studs/sec² slide acceleration on steep slopes
+local SLOPE_SMOOTHING_FACTOR = 12          -- Higher = faster response to terrain changes
+local TERRAIN_HEIGHT_SMOOTH_SPEED = 15     -- How fast we interpolate to target height
+
+-- Cached slope data for smooth transitions
+local terrainState = {
+    smoothedHeight = nil,       -- Smoothly interpolated target height
+    smoothedNormal = Vector3.new(0, 1, 0),  -- Smoothed terrain normal
+    currentSlope = 0,           -- Current slope angle in degrees
+    slideVelocity = Vector3.zero,  -- Accumulated slide velocity on steep slopes
+    smoothedPitch = 0,          -- Smoothed pitch angle for slope-following tilt
+}
+
+-- Maximum pitch angle for slope visualization (degrees)
+local MAX_SLOPE_PITCH = 20
+local PITCH_SMOOTH_SPEED = 8  -- How fast pitch responds to terrain changes
+
 -- Get the terrain height at a given X, Z position by sampling voxels
 -- Returns the Y position of the TOP of the highest solid terrain, or nil if no terrain
 local function getTerrainHeightAt(x, z, searchFromY)
@@ -811,6 +844,146 @@ local function getTerrainHeightAt(x, z, searchFromY)
     end
 
     return highestY
+end
+
+-- Sample ground height at a position using both raycast and terrain voxels
+-- Returns height, normal, and whether ground was found
+local function sampleGroundAt(x, z, searchFromY, rayParams)
+    local samplePos = Vector3.new(x, searchFromY + 5, z)
+    local rayDir = Vector3.new(0, -15, 0)
+
+    -- Try raycast first (for parts)
+    local result = workspace:Raycast(samplePos, rayDir, rayParams)
+    if result then
+        return result.Position.Y, result.Normal, true
+    end
+
+    -- Fall back to terrain voxels
+    local terrainY = getTerrainHeightAt(x, z, searchFromY)
+    if terrainY then
+        -- Estimate normal from nearby terrain samples (simple gradient)
+        return terrainY, Vector3.new(0, 1, 0), true
+    end
+
+    return nil, Vector3.new(0, 1, 0), false
+end
+
+-- Multi-point terrain sampling for smooth ground detection
+-- Returns weighted average height, estimated normal, and slope angle
+local function sampleTerrainMultiPoint(centerX, centerZ, searchFromY, facingAngle, rayParams)
+    local totalHeight = 0
+    local totalWeight = 0
+    local sampleHeights = {}
+    local foundAny = false
+
+    -- Rotate sample offsets to align with facing direction
+    local cosA = math.cos(facingAngle)
+    local sinA = math.sin(facingAngle)
+
+    for i, offset in ipairs(TERRAIN_SAMPLE_OFFSETS) do
+        -- Rotate offset by facing angle
+        local rotatedX = offset.X * cosA - offset.Z * sinA
+        local rotatedZ = offset.X * sinA + offset.Z * cosA
+
+        local sampleX = centerX + rotatedX
+        local sampleZ = centerZ + rotatedZ
+
+        local height, _, found = sampleGroundAt(sampleX, sampleZ, searchFromY, rayParams)
+
+        if found and height then
+            -- Weight center sample more heavily
+            local weight = (i == 1) and 2.0 or 1.0
+            totalHeight = totalHeight + height * weight
+            totalWeight = totalWeight + weight
+            sampleHeights[i] = height
+            foundAny = true
+        end
+    end
+
+    if not foundAny or totalWeight == 0 then
+        return nil, Vector3.new(0, 1, 0), 0
+    end
+
+    local avgHeight = totalHeight / totalWeight
+
+    -- Estimate terrain normal from sample points
+    -- Use gradient between front/back and left/right samples
+    local normalX, normalZ = 0, 0
+
+    -- Left-right gradient (samples 2 and 3)
+    if sampleHeights[2] and sampleHeights[3] then
+        local dY = sampleHeights[2] - sampleHeights[3]  -- Right minus Left
+        local dX = 3.0  -- Distance between samples
+        normalX = -dY / dX
+    end
+
+    -- Front-back gradient (samples 4 and 5)
+    if sampleHeights[4] and sampleHeights[5] then
+        local dY = sampleHeights[4] - sampleHeights[5]  -- Front minus Back
+        local dZ = 3.0
+        normalZ = -dY / dZ
+    end
+
+    -- Construct and normalize the terrain normal
+    local estimatedNormal = Vector3.new(normalX, 1, normalZ).Unit
+
+    -- Calculate slope angle from the normal
+    local slopeAngle = math.deg(math.acos(math.clamp(estimatedNormal.Y, -1, 1)))
+
+    return avgHeight, estimatedNormal, slopeAngle
+end
+
+-- Calculate slope direction (downhill vector) from terrain normal
+local function getSlopeDirection(normal)
+    -- Project gravity onto the slope plane
+    local gravity = Vector3.new(0, -1, 0)
+    local slopeDir = gravity - normal * gravity:Dot(normal)
+
+    if slopeDir.Magnitude > 0.001 then
+        return slopeDir.Unit
+    end
+    return Vector3.zero
+end
+
+-- Get slope modifier for speed based on movement direction relative to slope
+local function getSlopeSpeedModifier(movementDir, terrainNormal, slopeAngle)
+    if slopeAngle < 5 then
+        -- Nearly flat, no modifier
+        return 1.0
+    end
+
+    local slopeDir = getSlopeDirection(terrainNormal)
+    if slopeDir.Magnitude < 0.001 then
+        return 1.0
+    end
+
+    -- Dot product: positive = going downhill, negative = going uphill
+    local moveDirFlat = Vector3.new(movementDir.X, 0, movementDir.Z)
+    if moveDirFlat.Magnitude < 0.001 then
+        return 1.0
+    end
+    moveDirFlat = moveDirFlat.Unit
+
+    local slopeDirFlat = Vector3.new(slopeDir.X, 0, slopeDir.Z)
+    if slopeDirFlat.Magnitude < 0.001 then
+        return 1.0
+    end
+    slopeDirFlat = slopeDirFlat.Unit
+
+    local alignment = moveDirFlat:Dot(slopeDirFlat)
+
+    -- Scale effect by slope steepness (steeper = more effect)
+    local steepnessFactor = math.clamp(slopeAngle / 40, 0, 1)
+
+    if alignment > 0 then
+        -- Going downhill - speed bonus
+        local bonus = 1 + (SLOPE_SPEED_DOWNHILL_BONUS - 1) * alignment * steepnessFactor
+        return bonus
+    else
+        -- Going uphill - speed penalty
+        local penalty = 1 - (1 - SLOPE_SPEED_UPHILL_PENALTY) * math.abs(alignment) * steepnessFactor
+        return penalty
+    end
 end
 
 -- Check for wall collision in the movement direction
@@ -1014,41 +1187,119 @@ local function updateMovement(dt)
         end
     end
 
-    -- When grounded and moving, follow the ground surface (works for both parts and terrain)
-    if state.isGrounded and state.verticalVelocity <= 0 and horizontalMovement.Magnitude > 0.001 then
-        local targetX = currentPos.X + movement.X
-        local targetZ = currentPos.Z + movement.Z
+    -- ============================================
+    -- SMOOTH TERRAIN FOLLOWING SYSTEM
+    -- ============================================
+    -- Multi-point sampling for elegant ground-following on uneven terrain
 
-        -- Raycast downward from target position to find ground surface
-        local rayParams = RaycastParams.new()
-        rayParams.FilterDescendantsInstances = {horse, state.character}
-        rayParams.FilterType = Enum.RaycastFilterType.Exclude
-        rayParams.RespectCanCollide = true
+    -- Set up ray parameters for terrain sampling
+    local rayParams = RaycastParams.new()
+    rayParams.FilterDescendantsInstances = {horse, state.character}
+    rayParams.FilterType = Enum.RaycastFilterType.Exclude
+    rayParams.RespectCanCollide = true
 
-        -- Cast from above to find the ground at target position
-        local rayStart = Vector3.new(targetX, currentPos.Y + 5, targetZ)
-        local rayDir = Vector3.new(0, -15, 0)
-        local groundHit = workspace:Raycast(rayStart, rayDir, rayParams)
+    -- Sample terrain at target position using multiple points
+    local targetX = currentPos.X + movement.X
+    local targetZ = currentPos.Z + movement.Z
 
-        if groundHit then
-            -- Found ground (part-based ramp, floor, etc.)
-            local targetY = groundHit.Position.Y + 3  -- Horse height above surface
+    if state.isGrounded and state.verticalVelocity <= 0 then
+        -- Use multi-point terrain sampling for smooth height detection
+        local sampledHeight, sampledNormal, slopeAngle = sampleTerrainMultiPoint(
+            targetX, targetZ, currentPos.Y, state.facingAngle, rayParams
+        )
+
+        if sampledHeight then
+            -- Initialize smoothed height on first sample
+            if not terrainState.smoothedHeight then
+                terrainState.smoothedHeight = currentPos.Y - 3  -- Ground level
+            end
+
+            -- Smoothly interpolate terrain normal for stable slope detection
+            local normalSmoothing = 1 - math.exp(-SLOPE_SMOOTHING_FACTOR * dt)
+            terrainState.smoothedNormal = terrainState.smoothedNormal:Lerp(sampledNormal, normalSmoothing)
+            terrainState.currentSlope = slopeAngle
+
+            -- Calculate target height with smooth interpolation
+            local targetGroundY = sampledHeight
+            local heightSmoothing = 1 - math.exp(-TERRAIN_HEIGHT_SMOOTH_SPEED * dt)
+
+            -- Adaptive smoothing: faster when far from target, slower when close (prevents oscillation)
+            local heightError = math.abs(targetGroundY - terrainState.smoothedHeight)
+            if heightError > 2 then
+                heightSmoothing = math.min(1, heightSmoothing * 2)  -- Speed up for large corrections
+            elseif heightError < 0.5 then
+                heightSmoothing = heightSmoothing * 0.7  -- Slow down for fine adjustments
+            end
+
+            terrainState.smoothedHeight = terrainState.smoothedHeight + (targetGroundY - terrainState.smoothedHeight) * heightSmoothing
+
+            -- Horse rides 3 studs above ground
+            local targetY = terrainState.smoothedHeight + 3
             local heightDelta = targetY - currentPos.Y
 
-            -- Check if this is a walkable slope
-            local slopeAngle = math.deg(math.acos(groundHit.Normal.Y))
+            -- Only apply if slope is walkable
             if slopeAngle <= MAX_WALKABLE_SLOPE then
-                -- Smoothly follow the ground surface
-                verticalMovement = heightDelta * math.min(1, dt * 10)
+                verticalMovement = heightDelta
+
+                -- ============================================
+                -- SLOPE-BASED VELOCITY MODIFIER
+                -- ============================================
+                -- Apply speed boost downhill, penalty uphill for natural feel
+                if horizontalMovement.Magnitude > 0.001 then
+                    local slopeSpeedMod = getSlopeSpeedModifier(horizontalMovement, terrainState.smoothedNormal, slopeAngle)
+
+                    -- Apply slope modifier to velocity (affects actual movement)
+                    state.velocity = state.velocity * slopeSpeedMod
+
+                    -- Slightly adjust current speed perception for UI smoothness
+                    -- (Don't fully modify currentSpeed to avoid acceleration fighting)
+                    if slopeSpeedMod > 1 then
+                        -- Downhill: allow speed to creep up slightly
+                        state.currentSpeed = math.min(state.currentSpeed * 1.02, state.currentSpeed * slopeSpeedMod)
+                    end
+                end
+
+                -- ============================================
+                -- ELEGANT SLOPE SLIDING
+                -- ============================================
+                -- On steep-but-walkable slopes, add gentle sliding for realism
+                if slopeAngle >= SLOPE_SLIDE_THRESHOLD and slopeAngle <= MAX_WALKABLE_SLOPE then
+                    local slideFactor = (slopeAngle - SLOPE_SLIDE_THRESHOLD) / (MAX_WALKABLE_SLOPE - SLOPE_SLIDE_THRESHOLD)
+                    slideFactor = slideFactor * slideFactor  -- Exponential curve for smooth onset
+
+                    local slopeDir = getSlopeDirection(terrainState.smoothedNormal)
+
+                    -- Accumulate slide velocity smoothly
+                    local slideAccel = slopeDir * SLOPE_SLIDE_FORCE * slideFactor * dt
+                    terrainState.slideVelocity = terrainState.slideVelocity + slideAccel
+
+                    -- Dampen slide velocity (friction)
+                    local slideDamping = 0.92
+                    terrainState.slideVelocity = terrainState.slideVelocity * slideDamping
+
+                    -- Cap slide velocity
+                    local maxSlideSpeed = 15
+                    if terrainState.slideVelocity.Magnitude > maxSlideSpeed then
+                        terrainState.slideVelocity = terrainState.slideVelocity.Unit * maxSlideSpeed
+                    end
+
+                    -- Add slide to movement (horizontal only, vertical handled by ground following)
+                    local slideHorizontal = Vector3.new(terrainState.slideVelocity.X, 0, terrainState.slideVelocity.Z) * dt
+                    movement = movement + slideHorizontal
+                else
+                    -- Not on steep slope, decay slide velocity
+                    terrainState.slideVelocity = terrainState.slideVelocity * 0.85
+                end
             end
         else
-            -- No part hit, check terrain
-            local terrainY = getTerrainHeightAt(targetX, targetZ, currentPos.Y)
-            if terrainY and math.abs(terrainY - currentPos.Y) < 8 then
-                local targetY = terrainY + 3
-                local heightDelta = targetY - currentPos.Y
-                verticalMovement = heightDelta * math.min(1, dt * 10)
-            end
+            -- No ground found, decay terrain state
+            terrainState.slideVelocity = terrainState.slideVelocity * 0.9
+        end
+    else
+        -- In air or jumping, reset slide and let smoothed height decay toward current position
+        terrainState.slideVelocity = Vector3.zero
+        if terrainState.smoothedHeight then
+            terrainState.smoothedHeight = currentPos.Y - 3
         end
     end
 
@@ -1111,9 +1362,39 @@ local function updateMovement(dt)
 
     local newPos = currentPos + Vector3.new(movement.X, verticalMovement, movement.Z)
 
-    -- Apply new CFrame to horse with tilt (negate tilt so right turn = lean right)
+    -- ============================================
+    -- TERRAIN-AWARE BODY ORIENTATION
+    -- ============================================
+    -- Calculate pitch from terrain normal for slope-following tilt
+
+    local targetPitch = 0
+    if state.isGrounded and terrainState.smoothedNormal then
+        -- Get the forward component of the terrain normal relative to facing direction
+        local facingDir = Vector3.new(math.sin(state.facingAngle), 0, math.cos(state.facingAngle))
+
+        -- Project terrain normal onto the plane containing facing direction and up
+        -- This gives us how much the ground tilts in the forward/backward direction
+        local normalForwardComponent = terrainState.smoothedNormal:Dot(facingDir)
+
+        -- Calculate pitch angle (negative normal forward = uphill = positive pitch)
+        -- The Y component of normal indicates flatness, forward component indicates slope direction
+        if terrainState.smoothedNormal.Y > 0.1 then
+            targetPitch = math.atan2(-normalForwardComponent, terrainState.smoothedNormal.Y)
+            targetPitch = math.clamp(targetPitch, math.rad(-MAX_SLOPE_PITCH), math.rad(MAX_SLOPE_PITCH))
+        end
+    end
+
+    -- Smoothly interpolate pitch for elegant transitions
+    local pitchSmoothing = 1 - math.exp(-PITCH_SMOOTH_SPEED * dt)
+    terrainState.smoothedPitch = terrainState.smoothedPitch + (targetPitch - terrainState.smoothedPitch) * pitchSmoothing
+
+    -- Apply new CFrame to horse with:
+    -- 1. Yaw (facing direction)
+    -- 2. Pitch (slope following - tilt forward/backward)
+    -- 3. Roll (turn lean - tilt left/right)
     local newCFrame = CFrame.new(newPos)
         * CFrame.Angles(0, state.facingAngle, 0)
+        * CFrame.Angles(terrainState.smoothedPitch, 0, 0)
         * CFrame.Angles(0, 0, -state.currentTilt)
 
     horse:PivotTo(newCFrame)
@@ -1448,6 +1729,13 @@ local function mount(horse)
     state.burstCooldown = 0
     state.verticalVelocity = 0
     state.isGrounded = true
+
+    -- Reset terrain smoothing state for clean start
+    terrainState.smoothedHeight = nil
+    terrainState.smoothedNormal = Vector3.new(0, 1, 0)
+    terrainState.currentSlope = 0
+    terrainState.slideVelocity = Vector3.zero
+    terrainState.smoothedPitch = 0
 
     -- Bind mounted controls
     bindMountedInputs()
