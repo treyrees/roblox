@@ -1,33 +1,43 @@
 --[[
     FenceCollisionSetup.server.lua
-    Finds fence parts in the workspace and adds invisible collision walls
+    Finds fence models in the workspace and adds invisible collision walls
     to prevent players from walking/jumping over them.
 
     How to use:
-    1. Name your fence models/parts with "Fence" in the name (e.g., "Fence", "WoodFence", "FencePost")
+    1. Name your fence models "Fence" (or anything containing "Fence")
     2. This script will automatically add invisible walls on top of them
-
-    Or manually tag parts with CollectionService tag "Fence"
 ]]
 
-local CollectionService = game:GetService("CollectionService")
-
 -- Configuration
-local WALL_HEIGHT = 15        -- How tall the invisible wall should be (studs above fence)
+local WALL_HEIGHT = 15        -- How tall the invisible wall should be (studs)
 local WALL_TRANSPARENCY = 1   -- 1 = fully invisible, set to 0.5 to debug/see walls
 local FENCE_NAME_PATTERN = "fence" -- Case-insensitive pattern to match fence names
 
--- Track which parts we've already processed
-local processedParts = {}
+-- Track which fences we've already processed
+local processedFences = {}
 
--- Create an invisible wall above a fence part
-local function addCollisionWall(part)
-    if processedParts[part] then return end
-    processedParts[part] = true
+-- Get the bounding box of a model or part
+local function getBoundingBox(object)
+    if object:IsA("Model") then
+        -- Use GetBoundingBox for models
+        local cf, size = object:GetBoundingBox()
+        return cf, size
+    elseif object:IsA("BasePart") then
+        return object.CFrame, object.Size
+    end
+    return nil, nil
+end
 
-    -- Get the size and position of the fence part
-    local size = part.Size
-    local cf = part.CFrame
+-- Create an invisible wall above a fence
+local function addCollisionWall(fence)
+    if processedFences[fence] then return end
+    processedFences[fence] = true
+
+    local cf, size = getBoundingBox(fence)
+    if not cf or not size then
+        warn("[FenceCollision] Could not get bounds for:", fence:GetFullName())
+        return
+    end
 
     -- Create invisible wall part
     local wall = Instance.new("Part")
@@ -35,91 +45,91 @@ local function addCollisionWall(part)
     wall.Anchored = true
     wall.CanCollide = true
     wall.Transparency = WALL_TRANSPARENCY
-    wall.Material = Enum.Material.ForceField  -- Lightweight material
-    wall.Color = Color3.fromRGB(255, 0, 0)    -- Red for debugging (invisible anyway)
+    wall.Material = Enum.Material.ForceField
+    wall.Color = Color3.fromRGB(255, 0, 0)  -- Red for debugging (invisible anyway)
 
-    -- Size: same width/depth as fence, but tall
+    -- Size: cover the full fence footprint, extend upward
     wall.Size = Vector3.new(size.X, WALL_HEIGHT, size.Z)
 
-    -- Position: above the fence part
-    wall.CFrame = cf * CFrame.new(0, (size.Y / 2) + (WALL_HEIGHT / 2), 0)
+    -- Position: above the fence (only use Y rotation from fence)
+    local _, yRot, _ = cf:ToEulerAnglesYXZ()
+    local topOfFence = cf.Position + Vector3.new(0, size.Y / 2, 0)
+    wall.CFrame = CFrame.new(topOfFence + Vector3.new(0, WALL_HEIGHT / 2, 0)) * CFrame.Angles(0, yRot, 0)
 
-    -- Parent to the same parent as the fence (keeps hierarchy clean)
-    wall.Parent = part.Parent
+    -- Parent to workspace (not fence, so it doesn't affect fence bounds)
+    wall.Parent = workspace
 
-    -- If the fence part is destroyed, remove the wall too
-    part.AncestryChanged:Connect(function(_, parent)
+    -- If the fence is destroyed, remove the wall too
+    fence.AncestryChanged:Connect(function(_, parent)
         if not parent and wall and wall.Parent then
             wall:Destroy()
+            processedFences[fence] = nil
         end
     end)
 
-    print("[FenceCollision] Added wall above:", part:GetFullName())
+    print("[FenceCollision] Added wall above:", fence:GetFullName(), "Size:", size)
 end
 
--- Check if a part is a fence (by name or tag)
-local function isFencePart(part)
-    -- Check CollectionService tag
-    if CollectionService:HasTag(part, "Fence") then
-        return true
-    end
-
-    -- Check name (case-insensitive)
-    local name = part.Name:lower()
-    if name:find(FENCE_NAME_PATTERN) then
-        return true
-    end
-
-    -- Check parent model name
-    local model = part:FindFirstAncestorOfClass("Model")
-    if model and model.Name:lower():find(FENCE_NAME_PATTERN) then
-        return true
-    end
-
-    return false
+-- Check if something is a fence (by name)
+local function isFence(object)
+    local name = object.Name:lower()
+    return name:find(FENCE_NAME_PATTERN) ~= nil
 end
 
--- Process all existing fence parts
+-- Enable collision on all parts in a fence
+local function ensureFenceCollision(fence)
+    if fence:IsA("BasePart") then
+        fence.CanCollide = true
+    elseif fence:IsA("Model") then
+        for _, part in ipairs(fence:GetDescendants()) do
+            if part:IsA("BasePart") then
+                part.CanCollide = true
+            end
+        end
+    end
+end
+
+-- Process all existing fences
 local function processExistingFences()
     local count = 0
 
-    for _, descendant in ipairs(workspace:GetDescendants()) do
-        if descendant:IsA("BasePart") and isFencePart(descendant) then
-            addCollisionWall(descendant)
+    -- Look for direct children of workspace named "Fence"
+    for _, child in ipairs(workspace:GetChildren()) do
+        if isFence(child) then
+            ensureFenceCollision(child)
+            addCollisionWall(child)
             count = count + 1
         end
     end
 
-    print("[FenceCollision] Processed", count, "fence parts")
+    -- Also check all descendants for nested fences
+    for _, descendant in ipairs(workspace:GetDescendants()) do
+        if (descendant:IsA("Model") or descendant:IsA("BasePart")) and isFence(descendant) then
+            if not processedFences[descendant] then
+                ensureFenceCollision(descendant)
+                addCollisionWall(descendant)
+                count = count + 1
+            end
+        end
+    end
+
+    print("[FenceCollision] Processed", count, "fences")
 end
 
--- Listen for new fence parts added to workspace
-local function setupNewPartListener()
+-- Listen for new fences added to workspace
+local function setupNewFenceListener()
     workspace.DescendantAdded:Connect(function(descendant)
-        if descendant:IsA("BasePart") and isFencePart(descendant) then
-            -- Small delay to ensure part is fully loaded
+        if (descendant:IsA("Model") or descendant:IsA("BasePart")) and isFence(descendant) then
             task.defer(function()
+                ensureFenceCollision(descendant)
                 addCollisionWall(descendant)
             end)
         end
     end)
 end
 
--- Also ensure original fence parts have CanCollide = true
-local function ensureFenceCollision()
-    for _, descendant in ipairs(workspace:GetDescendants()) do
-        if descendant:IsA("BasePart") and isFencePart(descendant) then
-            if not descendant.CanCollide then
-                descendant.CanCollide = true
-                print("[FenceCollision] Enabled CanCollide on:", descendant:GetFullName())
-            end
-        end
-    end
-end
-
 -- Initialize
 print("[FenceCollision] Starting fence collision setup...")
-ensureFenceCollision()
 processExistingFences()
-setupNewPartListener()
+setupNewFenceListener()
 print("[FenceCollision] Setup complete!")
