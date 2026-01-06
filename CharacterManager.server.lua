@@ -65,95 +65,9 @@ local function applyCharacterModel(player, characterId)
     local character = player.Character
     if not character then return false end
 
-    local humanoid = character:FindFirstChildOfClass("Humanoid")
-    if not humanoid then return false end
-
-    -- Get the character model template
-    local newModel = getCharacterModel(characterId)
-    if not newModel then
-        -- If no model found, just keep default avatar but apply stats
-        print("[CharacterManager] No model found, keeping default avatar for", characterId)
-        return true
-    end
-
-    -- Get HumanoidRootPart position to maintain location
-    local rootPart = character:FindFirstChild("HumanoidRootPart")
-    local currentCFrame = rootPart and rootPart.CFrame or CFrame.new(0, 5, 0)
-
-    -- For R6 characters, we need to:
-    -- 1. Replace body parts with the new model's parts
-    -- 2. Keep the HumanoidRootPart and Humanoid functional
-
-    local newHumanoid = newModel:FindFirstChildOfClass("Humanoid")
-
-    -- Method: Replace the character entirely
-    -- Store important references
-    local oldCharacterName = character.Name
-
-    -- Prepare new model
-    newModel.Name = oldCharacterName
-
-    -- CRITICAL: Unanchor all parts in the model (inventory models are often anchored)
-    for _, part in ipairs(newModel:GetDescendants()) do
-        if part:IsA("BasePart") then
-            part.Anchored = false
-        end
-    end
-
-    -- Ensure the new model has required components
-    local newRootPart = newModel:FindFirstChild("HumanoidRootPart")
-    if not newRootPart then
-        -- Create HumanoidRootPart if missing (some R6 models don't have it)
-        local torso = newModel:FindFirstChild("Torso")
-        if torso then
-            newRootPart = Instance.new("Part")
-            newRootPart.Name = "HumanoidRootPart"
-            newRootPart.Size = Vector3.new(2, 2, 1)
-            newRootPart.Transparency = 1
-            newRootPart.CanCollide = false
-            newRootPart.Anchored = false
-            newRootPart.CFrame = torso.CFrame
-            newRootPart.Parent = newModel
-
-            -- Weld to torso
-            local weld = Instance.new("Motor6D")
-            weld.Name = "RootJoint"
-            weld.Part0 = newRootPart
-            weld.Part1 = torso
-            weld.Parent = newRootPart
-        end
-    end
-
-    if newRootPart then
-        newRootPart.CFrame = currentCFrame
-        newRootPart.Anchored = false
-    end
-
-    -- Ensure humanoid exists
-    if not newHumanoid then
-        newHumanoid = Instance.new("Humanoid")
-        newHumanoid.Parent = newModel
-    end
-
-    -- Set up the new character
-    newModel.PrimaryPart = newRootPart
-
-    -- Parent new model and set as character
-    newModel.Parent = workspace
-
-    -- Important: Destroy old character AFTER setting up new one
-    local oldCharacter = character
-    player.Character = newModel
-
-    -- Clean up old character
-    if oldCharacter then
-        oldCharacter:Destroy()
-    end
-
-    -- Store reference to the model
-    playerCharacterModels[player] = newModel
-
-    print("[CharacterManager] Applied character model:", characterId, "to", player.Name)
+    -- For now, skip model replacement - just use default avatar with stats
+    -- TODO: Implement proper R6 model replacement once models have correct joint structure
+    print("[CharacterManager] Using default avatar for", characterId, "(model swap disabled)")
     return true
 end
 
