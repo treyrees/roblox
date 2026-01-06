@@ -1,6 +1,7 @@
 --[[
     HorseSpawner.server.lua
-    Server script to create mountable horses in the world
+    Server script to set up mountable horses in the world
+    Supports both Toolbox horse models and procedural fallback
     Place in ServerScriptService
 ]]
 
@@ -23,8 +24,185 @@ DismountHorse.Parent = MountEvents
 local mountedPlayers = {} -- [player] = horse
 local horseMounts = {}    -- [horse] = player
 
--- Create a simple horse model
-local function createHorse(position, name)
+-- ============================================
+-- HORSE SETUP (for Toolbox models)
+-- ============================================
+
+-- Find the primary part to use for movement and mounting
+local function findHorsePrimaryPart(horse)
+    -- Check if already set
+    if horse.PrimaryPart then
+        return horse.PrimaryPart
+    end
+
+    -- Look for common primary parts in order of preference
+    local candidates = {
+        "HumanoidRootPart",
+        "Torso",
+        "Body",
+        "Root",
+        "MainPart"
+    }
+
+    for _, name in ipairs(candidates) do
+        local part = horse:FindFirstChild(name, true)
+        if part and part:IsA("BasePart") then
+            horse.PrimaryPart = part
+            return part
+        end
+    end
+
+    -- Fallback: find any BasePart
+    for _, child in ipairs(horse:GetDescendants()) do
+        if child:IsA("BasePart") then
+            horse.PrimaryPart = child
+            return child
+        end
+    end
+
+    return nil
+end
+
+-- Set up a horse model for mounting
+local function setupHorse(horse)
+    local primaryPart = findHorsePrimaryPart(horse)
+    if not primaryPart then
+        warn("[HorseSpawner] Could not find primary part for horse:", horse.Name)
+        return false
+    end
+
+    -- Disable the horse's built-in riding script if it has one
+    local ridingScript = horse:FindFirstChild("RidingScript", true)
+    if ridingScript and ridingScript:IsA("Script") then
+        ridingScript.Disabled = true
+        print("[HorseSpawner] Disabled built-in RidingScript")
+    end
+
+    -- Also disable any LocalScripts
+    for _, script in ipairs(horse:GetDescendants()) do
+        if script:IsA("LocalScript") or script:IsA("Script") then
+            if script.Name:lower():find("ride") or script.Name:lower():find("mount") or script.Name:lower():find("control") then
+                script.Disabled = true
+                print("[HorseSpawner] Disabled script:", script.Name)
+            end
+        end
+    end
+
+    -- Disable any existing Seat functionality (we use welding instead)
+    local seat = horse:FindFirstChild("Seat", true)
+    if seat and seat:IsA("Seat") then
+        seat.Disabled = true
+    end
+
+    -- Make sure the horse can move (unanchor parts)
+    for _, part in ipairs(horse:GetDescendants()) do
+        if part:IsA("BasePart") then
+            part.Anchored = false
+            -- Keep collision for the main body only
+            if part ~= primaryPart then
+                part.CanCollide = false
+            end
+        end
+    end
+
+    -- The primary part should be anchored for our movement system
+    primaryPart.Anchored = true
+    primaryPart.CanCollide = false
+
+    -- Find or create a part to attach the ProximityPrompt
+    local promptParent = primaryPart
+
+    -- Check if there's already a mount prompt
+    local existingPrompt = horse:FindFirstChild("MountPrompt", true)
+    if existingPrompt then
+        existingPrompt:Destroy()
+    end
+
+    -- Create ProximityPrompt for mounting
+    local prompt = Instance.new("ProximityPrompt")
+    prompt.Name = "MountPrompt"
+    prompt.ActionText = "Mount"
+    prompt.ObjectText = horse.Name
+    prompt.KeyboardKeyCode = Enum.KeyCode.E
+    prompt.HoldDuration = 0
+    prompt.MaxActivationDistance = 10
+    prompt.RequiresLineOfSight = false
+    prompt.Parent = promptParent
+
+    -- Handle mount request
+    prompt.Triggered:Connect(function(player)
+        -- Check if horse is already mounted
+        if horseMounts[horse] then
+            return
+        end
+
+        -- Check if player is already mounted
+        if mountedPlayers[player] then
+            return
+        end
+
+        -- Mount the player
+        mountedPlayers[player] = horse
+        horseMounts[horse] = player
+        prompt.Enabled = false
+
+        -- Fire to the specific client
+        MountHorse:FireClient(player, horse)
+        print("[HorseSpawner] Player", player.Name, "mounted", horse.Name)
+    end)
+
+    print("[HorseSpawner] Set up horse:", horse.Name, "with primary part:", primaryPart.Name)
+    return true
+end
+
+-- Find all horses in workspace and set them up
+local function findAndSetupHorses()
+    local horsesFound = 0
+
+    -- Look for models that might be horses
+    local function checkModel(model)
+        if not model:IsA("Model") then return end
+
+        -- Check if it's likely a horse by looking for horse-like parts
+        local hasHumanoid = model:FindFirstChildOfClass("Humanoid") ~= nil
+        local hasTorso = model:FindFirstChild("Torso") ~= nil
+        local hasHorseIndicators = model:FindFirstChild("Mane") or
+            model:FindFirstChild("Tail") or
+            model:FindFirstChild("Saddle") or
+            model:FindFirstChild("LeftHind") or
+            model:FindFirstChild("RightHind") or
+            model:FindFirstChild("LeftFore") or
+            model:FindFirstChild("RightFore")
+
+        local nameIndicatesHorse = model.Name:lower():find("horse") ~= nil
+
+        if (hasHumanoid and hasHorseIndicators) or nameIndicatesHorse then
+            if setupHorse(model) then
+                horsesFound = horsesFound + 1
+            end
+        end
+
+        -- Check children (for nested models like Horse > Horse)
+        for _, child in ipairs(model:GetChildren()) do
+            if child:IsA("Model") then
+                checkModel(child)
+            end
+        end
+    end
+
+    -- Scan workspace
+    for _, child in ipairs(workspace:GetChildren()) do
+        checkModel(child)
+    end
+
+    return horsesFound
+end
+
+-- ============================================
+-- PROCEDURAL HORSE FALLBACK
+-- ============================================
+
+local function createProceduralHorse(position, name)
     local horse = Instance.new("Model")
     horse.Name = name or "Horse"
 
@@ -61,12 +239,12 @@ local function createHorse(position, name)
     neck.CanCollide = false
     neck.Parent = horse
 
-    -- Legs (4 of them)
+    -- Legs
     local legPositions = {
-        Vector3.new(-1, 0.75, -2),   -- Back left
-        Vector3.new(1, 0.75, -2),    -- Back right
-        Vector3.new(-1, 0.75, 2),    -- Front left
-        Vector3.new(1, 0.75, 2),     -- Front right
+        Vector3.new(-1, 0.75, -2),
+        Vector3.new(1, 0.75, -2),
+        Vector3.new(-1, 0.75, 2),
+        Vector3.new(1, 0.75, 2),
     }
 
     for i, legOffset in ipairs(legPositions) do
@@ -103,46 +281,33 @@ local function createHorse(position, name)
     mane.CanCollide = false
     mane.Parent = horse
 
-    -- Set primary part for model manipulation
     horse.PrimaryPart = body
-
-    -- ProximityPrompt for mounting
-    local prompt = Instance.new("ProximityPrompt")
-    prompt.Name = "MountPrompt"
-    prompt.ActionText = "Mount"
-    prompt.ObjectText = "Horse"
-    prompt.KeyboardKeyCode = Enum.KeyCode.E
-    prompt.HoldDuration = 0
-    prompt.MaxActivationDistance = 8
-    prompt.RequiresLineOfSight = false
-    prompt.Parent = body
-
-    -- Handle mount request
-    prompt.Triggered:Connect(function(player)
-        -- Check if horse is already mounted
-        if horseMounts[horse] then
-            return
-        end
-
-        -- Check if player is already mounted
-        if mountedPlayers[player] then
-            return
-        end
-
-        -- Mount the player
-        mountedPlayers[player] = horse
-        horseMounts[horse] = player
-        prompt.Enabled = false
-
-        -- Fire to the specific client
-        MountHorse:FireClient(player, horse)
-    end)
-
     horse.Parent = workspace
+
+    -- Set up mounting for this horse
+    setupHorse(horse)
+
     return horse
 end
 
--- Handle dismount request from client
+-- ============================================
+-- DISMOUNT HANDLING
+-- ============================================
+
+local function findMountPrompt(horse)
+    -- Try to find the prompt in various locations
+    local prompt = horse:FindFirstChild("MountPrompt", true)
+    if prompt then return prompt end
+
+    -- Check primary part
+    if horse.PrimaryPart then
+        prompt = horse.PrimaryPart:FindFirstChild("MountPrompt")
+        if prompt then return prompt end
+    end
+
+    return nil
+end
+
 DismountHorse.OnServerEvent:Connect(function(player)
     local horse = mountedPlayers[player]
     if not horse then return end
@@ -152,10 +317,12 @@ DismountHorse.OnServerEvent:Connect(function(player)
     horseMounts[horse] = nil
 
     -- Re-enable prompt
-    local prompt = horse.Body:FindFirstChild("MountPrompt")
+    local prompt = findMountPrompt(horse)
     if prompt then
         prompt.Enabled = true
     end
+
+    print("[HorseSpawner] Player", player.Name, "dismounted")
 end)
 
 -- Clean up when player leaves
@@ -165,37 +332,44 @@ game.Players.PlayerRemoving:Connect(function(player)
         mountedPlayers[player] = nil
         horseMounts[horse] = nil
 
-        local prompt = horse.Body:FindFirstChild("MountPrompt")
+        local prompt = findMountPrompt(horse)
         if prompt then
             prompt.Enabled = true
         end
     end
 end)
 
--- Find the SpawnLocation to place horse nearby
-local function findSpawnPosition()
-    -- Look for SpawnLocation in workspace
-    local spawn = workspace:FindFirstChildOfClass("SpawnLocation")
+-- ============================================
+-- INITIALIZATION
+-- ============================================
 
-    if spawn then
-        -- Place horse 10 studs in front of spawn (positive Z)
-        return spawn.Position + Vector3.new(10, 0, 0)
-    end
+-- Wait a moment for workspace to load
+task.wait(1)
 
-    -- Fallback: check if there's a Spawns folder
-    local spawnsFolder = workspace:FindFirstChild("Spawns")
-    if spawnsFolder then
-        local firstSpawn = spawnsFolder:FindFirstChildOfClass("SpawnLocation")
-        if firstSpawn then
-            return firstSpawn.Position + Vector3.new(10, 0, 0)
+-- Find and set up existing horses
+local horsesFound = findAndSetupHorses()
+print("[HorseSpawner] Found and set up", horsesFound, "horse(s) in workspace")
+
+-- If no horses found, create a procedural fallback
+if horsesFound == 0 then
+    local function findSpawnPosition()
+        local spawn = workspace:FindFirstChildOfClass("SpawnLocation")
+        if spawn then
+            return spawn.Position + Vector3.new(10, 0, 0)
         end
+
+        local spawnsFolder = workspace:FindFirstChild("Spawns")
+        if spawnsFolder then
+            local firstSpawn = spawnsFolder:FindFirstChildOfClass("SpawnLocation")
+            if firstSpawn then
+                return firstSpawn.Position + Vector3.new(10, 0, 0)
+            end
+        end
+
+        return Vector3.new(10, 0, 10)
     end
 
-    -- Default fallback position
-    return Vector3.new(10, 0, 10)
+    local spawnPos = findSpawnPosition()
+    local fallbackHorse = createProceduralHorse(spawnPos, "Horse")
+    print("[HorseSpawner] Created procedural fallback horse at", fallbackHorse.PrimaryPart.Position)
 end
-
-local spawnPos = findSpawnPosition()
-local testHorse = createHorse(spawnPos, "TestHorse")
-
-print("[HorseSpawner] Test horse created at", testHorse.PrimaryPart.Position)

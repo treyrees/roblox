@@ -23,6 +23,9 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local player = Players.LocalPlayer
 local camera = workspace.CurrentCamera
 
+-- Load horse animation module
+local HorseAnimation = require(script.Parent:WaitForChild("HorseAnimation"))
+
 -- Wait for mount events from server
 local MountEvents = ReplicatedStorage:WaitForChild("MountEvents")
 local MountHorse = MountEvents:WaitForChild("MountHorse")
@@ -138,6 +141,7 @@ local state = {
     isMounted = false,
     currentHorse = nil,
     riderWeld = nil,           -- Weld attaching player to horse
+    horseAnimator = nil,       -- Procedural animation controller
 
     -- Input
     moveInput = 0,
@@ -1065,6 +1069,9 @@ local function mount(horse)
     -- Set camera to Scriptable for manual control
     camera.CameraType = Enum.CameraType.Scriptable
 
+    -- Initialize procedural horse animation
+    state.horseAnimator = HorseAnimation.new(horse)
+
     -- Show UI
     if screenGui then
         screenGui.Enabled = true
@@ -1077,6 +1084,12 @@ function dismount()
     if not state.isMounted then return end
 
     state.isMounted = false
+
+    -- Cleanup horse animation
+    if state.horseAnimator then
+        state.horseAnimator:destroy()
+        state.horseAnimator = nil
+    end
 
     -- Remove weld
     if state.riderWeld then
@@ -1128,6 +1141,11 @@ end
 
 local function cleanupCharacter()
     if state.isMounted then
+        -- Cleanup horse animation
+        if state.horseAnimator then
+            state.horseAnimator:destroy()
+            state.horseAnimator = nil
+        end
         if state.riderWeld then
             state.riderWeld:Destroy()
             state.riderWeld = nil
@@ -1178,6 +1196,11 @@ RunService.RenderStepped:Connect(function(dt)
     -- Movement and physics
     updateMovement(dt)
     handleJump()
+
+    -- Horse procedural animation (legs, head, tail based on speed)
+    if state.horseAnimator then
+        state.horseAnimator:update(dt, state.currentSpeed, state.isGrounded)
+    end
 
     -- Camera and UI
     updateCamera(dt)
