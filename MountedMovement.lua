@@ -1,12 +1,12 @@
 --[[
     MountedMovement.lua
-    Horse-mounted racing movement with burst and body tilt
+    Horse-mounted racing movement with burst, body tilt, and double jump
 
     Controls:
     - WASD: Movement
     - Shift: Sprint (hold)
     - Shift (double-tap): Burst (speed boost, costs stamina)
-    - Space: Jump
+    - Space: Jump (press again in air for double jump with enhanced turning)
     - Q: Drift (hold while turning)
 ]]
 
@@ -46,8 +46,12 @@ local Config = {
     DRIFT_STAMINA_DRAIN = 8,   -- Additional stamina drain per second while drifting
     
     -- Jumping
-    JUMP_POWER = 55,
-    AIR_TURN_RATE = 15,        -- Degrees per second in air
+    JUMP_POWER = 66,           -- Base jump power (increased 20%)
+    DOUBLE_JUMP_POWER = 55,    -- Second jump power (slightly less)
+    DOUBLE_JUMP_COST = 25,     -- Stamina cost for double jump (25% more than base)
+    AIR_TURN_RATE = 15,        -- Degrees per second in air (normal)
+    DOUBLE_JUMP_TURN_RATE = 120, -- Degrees per second after double jump (enables repositioning)
+    DOUBLE_JUMP_TURN_DURATION = 0.8, -- How long enhanced air turning lasts
     AIR_CONTROL = 0.15,        -- How much you can influence air velocity (0-1)
     
     -- Feel
@@ -96,6 +100,10 @@ local state = {
     -- Tilt
     currentTilt = 0,           -- Current body roll angle (radians)
     turnRate = 0,              -- Current turn rate for tilt calculation
+
+    -- Double Jump
+    canDoubleJump = false,     -- Whether double jump is available
+    doubleJumpTurnTimer = 0,   -- Remaining enhanced air turn time
 
     -- References
     character = nil,
@@ -312,9 +320,13 @@ local function calculateTurnRate(dt)
         turnRate = turnRate * Config.DRIFT_TURN_BONUS
     end
 
-    -- Air penalty
+    -- Air turn rate (enhanced after double jump)
     if not state.isGrounded then
-        turnRate = Config.AIR_TURN_RATE
+        if state.doubleJumpTurnTimer > 0 then
+            turnRate = Config.DOUBLE_JUMP_TURN_RATE  -- Enhanced turning after double jump
+        else
+            turnRate = Config.AIR_TURN_RATE
+        end
     end
 
     -- Convert to radians and multiply by dt for frame-rate independence
@@ -323,23 +335,36 @@ end
 
 local function updateGroundedState()
     if not state.rootPart then return end
-    
+
+    local wasGrounded = state.isGrounded
+
     -- Raycast downward to check ground
     local rayOrigin = state.rootPart.Position
     local rayDirection = Vector3.new(0, -4, 0)
     local rayParams = RaycastParams.new()
     rayParams.FilterDescendantsInstances = {state.character}
     rayParams.FilterType = Enum.RaycastFilterType.Exclude
-    
+
     local result = workspace:Raycast(rayOrigin, rayDirection, rayParams)
     state.isGrounded = (result ~= nil)
+
+    -- Reset double jump state on landing
+    if state.isGrounded and not wasGrounded then
+        state.canDoubleJump = false
+        state.doubleJumpTurnTimer = 0
+    end
 end
 
 local function updateMovement(dt)
     if not state.rootPart or not state.humanoid then return end
-    
+
     state.moveDirection = getMoveDirection()
     updateGroundedState()
+
+    -- Update double jump turn timer
+    if state.doubleJumpTurnTimer > 0 then
+        state.doubleJumpTurnTimer = state.doubleJumpTurnTimer - dt
+    end
     
     -- Target speed
     local targetSpeed = calculateTargetSpeed()
@@ -426,23 +451,47 @@ local function handleJump()
     if not state.jumpRequested then return end
     state.jumpRequested = false
 
-    if not state.isGrounded then return end
-    if state.stamina < Config.JUMP_COST and state.penaltyTimer <= 0 then return end
+    -- Ground jump
+    if state.isGrounded then
+        if state.stamina < Config.JUMP_COST and state.penaltyTimer <= 0 then return end
 
-    -- Deduct stamina
-    if state.penaltyTimer <= 0 then
-        state.stamina = state.stamina - Config.JUMP_COST
+        -- Deduct stamina
+        if state.penaltyTimer <= 0 then
+            state.stamina = state.stamina - Config.JUMP_COST
+        end
+
+        -- Execute first jump
+        if state.rootPart then
+            state.rootPart.AssemblyLinearVelocity = Vector3.new(
+                state.rootPart.AssemblyLinearVelocity.X,
+                Config.JUMP_POWER,
+                state.rootPart.AssemblyLinearVelocity.Z
+            )
+            state.isGrounded = false
+            state.canDoubleJump = true  -- Enable double jump
+        end
+        return
     end
 
-    -- Execute jump by applying direct velocity to root part
-    if state.rootPart then
-        -- Apply upward velocity directly for reliable jumping
-        state.rootPart.AssemblyLinearVelocity = Vector3.new(
-            state.rootPart.AssemblyLinearVelocity.X,
-            Config.JUMP_POWER,
-            state.rootPart.AssemblyLinearVelocity.Z
-        )
-        state.isGrounded = false
+    -- Double jump (in air)
+    if state.canDoubleJump then
+        if state.stamina < Config.DOUBLE_JUMP_COST and state.penaltyTimer <= 0 then return end
+
+        -- Deduct stamina (25% more than base jump)
+        if state.penaltyTimer <= 0 then
+            state.stamina = state.stamina - Config.DOUBLE_JUMP_COST
+        end
+
+        -- Execute double jump
+        if state.rootPart then
+            state.rootPart.AssemblyLinearVelocity = Vector3.new(
+                state.rootPart.AssemblyLinearVelocity.X,
+                Config.DOUBLE_JUMP_POWER,
+                state.rootPart.AssemblyLinearVelocity.Z
+            )
+            state.canDoubleJump = false  -- Used up double jump
+            state.doubleJumpTurnTimer = Config.DOUBLE_JUMP_TURN_DURATION  -- Enable enhanced air turning
+        end
     end
 end
 
@@ -592,7 +641,15 @@ local function updateUI()
         table.insert(status, "SPRINT")
     end
     if state.isDrifting then table.insert(status, "DRIFT") end
-    if not state.isGrounded then table.insert(status, "AIR") end
+    if not state.isGrounded then
+        if state.doubleJumpTurnTimer > 0 then
+            table.insert(status, "DJUMP")  -- Enhanced air turning active
+        elseif state.canDoubleJump then
+            table.insert(status, "AIR+")   -- Double jump available
+        else
+            table.insert(status, "AIR")
+        end
+    end
     if state.burstCooldown > 0 and not state.isBursting then
         table.insert(status, string.format("CD:%.1f", state.burstCooldown))
     end
