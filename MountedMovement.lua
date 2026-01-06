@@ -31,9 +31,9 @@ local MountEvents = ReplicatedStorage:WaitForChild("MountEvents")
 local MountHorse = MountEvents:WaitForChild("MountHorse")
 local DismountHorse = MountEvents:WaitForChild("DismountHorse")
 
--- Wait for character selection system
-local SelectionEvents = ReplicatedStorage:WaitForChild("SelectionEvents")
-local GetCharacterData = SelectionEvents:WaitForChild("GetCharacterData")
+-- Wait for character selection system (optional - may not exist)
+local SelectionEvents = ReplicatedStorage:WaitForChild("SelectionEvents", 5)
+local GetCharacterData = SelectionEvents and SelectionEvents:WaitForChild("GetCharacterData", 5)
 
 -- ============================================
 -- TUNING VALUES (tweak these)
@@ -300,6 +300,11 @@ end
 -- CHARACTER DATA LOADING
 -- ============================================
 local function loadCharacterData()
+    if not GetCharacterData then
+        print("[MountedMovement] GetCharacterData not available - using defaults")
+        return
+    end
+
     local data = GetCharacterData:InvokeServer()
     if data then
         characterData.id = data.id
