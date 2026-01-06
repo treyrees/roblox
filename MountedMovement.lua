@@ -23,14 +23,17 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local player = Players.LocalPlayer
 local camera = workspace.CurrentCamera
 
+-- Load horse animation module
+local HorseAnimation = require(script.Parent:WaitForChild("HorseAnimation"))
+
 -- Wait for mount events from server
 local MountEvents = ReplicatedStorage:WaitForChild("MountEvents")
 local MountHorse = MountEvents:WaitForChild("MountHorse")
 local DismountHorse = MountEvents:WaitForChild("DismountHorse")
 
--- Wait for character selection system
-local SelectionEvents = ReplicatedStorage:WaitForChild("SelectionEvents")
-local GetCharacterData = SelectionEvents:WaitForChild("GetCharacterData")
+-- Wait for character selection system (optional - may not exist)
+local SelectionEvents = ReplicatedStorage:WaitForChild("SelectionEvents", 5)
+local GetCharacterData = SelectionEvents and SelectionEvents:WaitForChild("GetCharacterData", 5)
 
 -- ============================================
 -- TUNING VALUES (tweak these)
@@ -138,6 +141,7 @@ local state = {
     isMounted = false,
     currentHorse = nil,
     riderWeld = nil,           -- Weld attaching player to horse
+    horseAnimator = nil,       -- Procedural animation controller
 
     -- Input
     moveInput = 0,
@@ -296,6 +300,11 @@ end
 -- CHARACTER DATA LOADING
 -- ============================================
 local function loadCharacterData()
+    if not GetCharacterData then
+        print("[MountedMovement] GetCharacterData not available - using defaults")
+        return
+    end
+
     local data = GetCharacterData:InvokeServer()
     if data then
         characterData.id = data.id
@@ -451,7 +460,7 @@ local function tryBlink()
 
     -- Calculate blink destination
     local distance = params.blinkDistance or 18
-    local facingDir = Vector3.new(-math.sin(state.facingAngle), 0, -math.cos(state.facingAngle))
+    local facingDir = Vector3.new(math.sin(state.facingAngle), 0, math.cos(state.facingAngle))
     local currentPos = horse.PrimaryPart.Position
     local targetPos = currentPos + facingDir * distance
 
@@ -706,7 +715,7 @@ local function updateMovement(dt)
     state.turnRate = actualTurnRate
 
     -- Calculate velocity
-    local facingDir = Vector3.new(-math.sin(state.facingAngle), 0, -math.cos(state.facingAngle))
+    local facingDir = Vector3.new(math.sin(state.facingAngle), 0, math.cos(state.facingAngle))
     local targetVelocity = facingDir * state.currentSpeed
 
     -- Drift system
@@ -781,8 +790,9 @@ local function updateMovement(dt)
     local newPos = currentPos + Vector3.new(movement.X, verticalMovement, movement.Z)
 
     -- Apply new CFrame to horse with tilt
+    -- Add pi to rotate horse model 180 degrees so head faces movement direction
     local newCFrame = CFrame.new(newPos)
-        * CFrame.Angles(0, state.facingAngle, 0)
+        * CFrame.Angles(0, state.facingAngle + math.pi, 0)
         * CFrame.Angles(0, 0, state.currentTilt)
 
     horse:PivotTo(newCFrame)
@@ -1014,9 +1024,41 @@ end
 -- MOUNT / DISMOUNT
 -- ============================================
 local function mount(horse)
-    if state.isMounted then return end
-    if not state.humanoid or not state.rootPart then return end
-    if not horse or not horse.PrimaryPart then return end
+    print("[MountedMovement] Mount called with horse:", horse and horse.Name or "nil")
+
+    if state.isMounted then
+        print("[MountedMovement] Already mounted, ignoring")
+        return
+    end
+    if not state.humanoid or not state.rootPart then
+        print("[MountedMovement] No humanoid or rootPart - waiting for character")
+        return
+    end
+    if not horse then
+        print("[MountedMovement] No horse provided")
+        return
+    end
+
+    -- Find PrimaryPart if not set
+    if not horse.PrimaryPart then
+        print("[MountedMovement] Horse has no PrimaryPart, searching...")
+        local candidates = {"HumanoidRootPart", "Torso", "Body"}
+        for _, name in ipairs(candidates) do
+            local part = horse:FindFirstChild(name, true)
+            if part and part:IsA("BasePart") then
+                horse.PrimaryPart = part
+                print("[MountedMovement] Set PrimaryPart to:", name)
+                break
+            end
+        end
+    end
+
+    if not horse.PrimaryPart then
+        print("[MountedMovement] ERROR: Could not find PrimaryPart for horse")
+        return
+    end
+
+    print("[MountedMovement] Using PrimaryPart:", horse.PrimaryPart.Name)
 
     -- Load character data from server and apply stats
     loadCharacterData()
@@ -1065,9 +1107,24 @@ local function mount(horse)
     -- Set camera to Scriptable for manual control
     camera.CameraType = Enum.CameraType.Scriptable
 
+    -- Initialize procedural horse animation
+    local animSuccess, animResult = pcall(function()
+        return HorseAnimation.new(horse)
+    end)
+    if animSuccess then
+        state.horseAnimator = animResult
+        print("[MountedMovement] Horse animation initialized")
+    else
+        warn("[MountedMovement] Failed to initialize horse animation:", animResult)
+        state.horseAnimator = nil
+    end
+
     -- Show UI
     if screenGui then
         screenGui.Enabled = true
+        print("[MountedMovement] UI enabled")
+    else
+        warn("[MountedMovement] No screenGui found!")
     end
 
     print("[MountedMovement] Mounted horse as", characterData.id or "default")
@@ -1077,6 +1134,12 @@ function dismount()
     if not state.isMounted then return end
 
     state.isMounted = false
+
+    -- Cleanup horse animation
+    if state.horseAnimator then
+        state.horseAnimator:destroy()
+        state.horseAnimator = nil
+    end
 
     -- Remove weld
     if state.riderWeld then
@@ -1128,6 +1191,11 @@ end
 
 local function cleanupCharacter()
     if state.isMounted then
+        -- Cleanup horse animation
+        if state.horseAnimator then
+            state.horseAnimator:destroy()
+            state.horseAnimator = nil
+        end
         if state.riderWeld then
             state.riderWeld:Destroy()
             state.riderWeld = nil
@@ -1160,6 +1228,7 @@ player.CharacterAdded:Connect(setupCharacter)
 player.CharacterRemoving:Connect(cleanupCharacter)
 
 MountHorse.OnClientEvent:Connect(function(horse)
+    print("[MountedMovement] Received MountHorse event, horse:", horse and horse:GetFullName() or "nil")
     mount(horse)
 end)
 
@@ -1178,6 +1247,11 @@ RunService.RenderStepped:Connect(function(dt)
     -- Movement and physics
     updateMovement(dt)
     handleJump()
+
+    -- Horse procedural animation (legs, head, tail based on speed)
+    if state.horseAnimator then
+        state.horseAnimator:update(dt, state.currentSpeed, state.isGrounded)
+    end
 
     -- Camera and UI
     updateCamera(dt)
