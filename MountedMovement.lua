@@ -1,11 +1,12 @@
 --[[
     MountedMovement.lua
-    Base prototype for horse-mounted racing movement
-    
+    Horse-mounted racing movement with burst, body tilt, and double jump
+
     Controls:
     - WASD: Movement
     - Shift: Sprint (hold)
-    - Space: Jump
+    - Shift (double-tap): Burst (speed boost, costs stamina)
+    - Space: Jump (press again in air for double jump with enhanced turning)
     - Q: Drift (hold while turning)
 ]]
 
@@ -22,34 +23,51 @@ local camera = workspace.CurrentCamera
 -- ============================================
 local Config = {
     -- Speed
-    BASE_SPEED = 28,           -- Walking speed
-    SPRINT_SPEED = 52,         -- Full gallop
-    ACCELERATION = 2.5,        -- How fast you reach target speed (per second, multiplied)
-    DECELERATION = 4.0,        -- How fast you slow down when not pressing forward
+    BASE_SPEED = 40,           -- Walking speed
+    SPRINT_SPEED = 80,         -- Full gallop (2x base speed)
+    ACCELERATION = 1.2,        -- How fast you reach target speed (lower = more horse-like buildup)
+    DECELERATION = 3.0,        -- How fast you slow down when not pressing forward
     EMPTY_STAMINA_PENALTY = 0.7, -- Speed multiplier when stamina bottoms out
-    
+
     -- Stamina
     MAX_STAMINA = 100,
     SPRINT_DRAIN = 15,         -- Per second while sprinting
     JUMP_COST = 20,            -- Flat cost per jump
-    REGEN_RATE = 12,           -- Per second when not sprinting
+    REGEN_MIN_RATE = 8,        -- Regen per second when stamina is low
+    REGEN_MAX_RATE = 25,       -- Regen per second when stamina is high (satisfying to top off)
     REGEN_DELAY = 0.5,         -- Seconds before regen starts
     EMPTY_PENALTY_DURATION = 2, -- Seconds of penalty when emptied
-    
+
     -- Turning (degrees per second for frame-rate independence)
     BASE_TURN_RATE = 480,      -- Degrees per second at low speed
-    MIN_TURN_RATE = 150,       -- Degrees per second at max speed
+    MIN_TURN_RATE = 100,       -- Degrees per second at max speed (harder to turn when fast)
     DRIFT_TURN_BONUS = 2.0,    -- Multiplier to turn rate while drifting
     DRIFT_SPEED_RETAIN = 0.85, -- Speed retention while drifting (vs braking)
     DRIFT_STAMINA_DRAIN = 8,   -- Additional stamina drain per second while drifting
     
     -- Jumping
-    JUMP_POWER = 55,
-    AIR_TURN_RATE = 15,        -- Degrees per second in air
+    JUMP_POWER = 66,           -- Base jump power (increased 20%)
+    DOUBLE_JUMP_POWER = 55,    -- Second jump power (slightly less)
+    DOUBLE_JUMP_COST = 25,     -- Stamina cost for double jump (25% more than base)
+    AIR_TURN_RATE = 15,        -- Degrees per second in air (normal)
+    DOUBLE_JUMP_TURN_RATE = 120, -- Degrees per second after double jump (enables repositioning)
+    DOUBLE_JUMP_TURN_DURATION = 0.8, -- How long enhanced air turning lasts
     AIR_CONTROL = 0.15,        -- How much you can influence air velocity (0-1)
     
     -- Feel
     MOMENTUM_FACTOR = 0.92,    -- How much velocity carries frame-to-frame (0.9-0.99)
+
+    -- Burst (double-tap sprint)
+    BURST_SPEED_MULT = 1.4,    -- Speed multiplier during burst (1.4x sprint)
+    BURST_DURATION = 1.5,      -- How long burst lasts (seconds)
+    BURST_COST = 25,           -- Stamina cost to trigger burst
+    BURST_COOLDOWN = 3.0,      -- Seconds before burst can be used again
+    BURST_TAP_WINDOW = 0.3,    -- Seconds to double-tap for burst
+    BURST_TURN_PENALTY = 0.4,  -- Turn rate multiplier during burst (commit factor - hard to steer)
+
+    -- Body Tilt
+    MAX_TILT_ANGLE = 15,       -- Maximum lean angle in degrees
+    TILT_SPEED = 8,            -- How fast tilt responds (higher = snappier)
 }
 
 -- ============================================
@@ -72,7 +90,21 @@ local state = {
     stamina = Config.MAX_STAMINA,
     regenTimer = 0,
     penaltyTimer = 0,
-    
+
+    -- Burst
+    lastSprintTap = 0,         -- Time of last sprint key press
+    isBursting = false,
+    burstTimer = 0,            -- Remaining burst duration
+    burstCooldown = 0,         -- Cooldown until next burst
+
+    -- Tilt
+    currentTilt = 0,           -- Current body roll angle (radians)
+    turnRate = 0,              -- Current turn rate for tilt calculation
+
+    -- Double Jump
+    canDoubleJump = false,     -- Whether double jump is available
+    doubleJumpTurnTimer = 0,   -- Remaining enhanced air turn time
+
     -- References
     character = nil,
     humanoid = nil,
@@ -82,10 +114,31 @@ local state = {
 -- ============================================
 -- INPUT HANDLING
 -- ============================================
+local function tryTriggerBurst()
+    -- Check if burst can be triggered
+    if state.burstCooldown > 0 then return false end
+    if state.stamina < Config.BURST_COST then return false end
+    if state.penaltyTimer > 0 then return false end
+    if not state.isGrounded then return false end
+
+    -- Trigger burst
+    state.isBursting = true
+    state.burstTimer = Config.BURST_DURATION
+    state.burstCooldown = Config.BURST_COOLDOWN
+    state.stamina = state.stamina - Config.BURST_COST
+    return true
+end
+
 local function bindInputs()
-    -- Sprint (explicit Begin/End handling for reliability)
+    -- Sprint (with double-tap burst detection)
     ContextActionService:BindAction("Sprint", function(_, inputState)
         if inputState == Enum.UserInputState.Begin then
+            local now = tick()
+            -- Check for double-tap
+            if (now - state.lastSprintTap) <= Config.BURST_TAP_WINDOW then
+                tryTriggerBurst()
+            end
+            state.lastSprintTap = now
             state.isSprinting = true
         elseif inputState == Enum.UserInputState.End then
             state.isSprinting = false
@@ -120,6 +173,8 @@ local function unbindInputs()
     state.isSprinting = false
     state.isDrifting = false
     state.jumpRequested = false
+    state.isBursting = false
+    state.burstTimer = 0
 end
 
 local function getMoveDirection()
@@ -154,11 +209,30 @@ local function getMoveDirection()
 end
 
 -- ============================================
+-- BURST SYSTEM
+-- ============================================
+local function updateBurst(dt)
+    -- Update cooldown
+    if state.burstCooldown > 0 then
+        state.burstCooldown = state.burstCooldown - dt
+    end
+
+    -- Update active burst
+    if state.isBursting then
+        state.burstTimer = state.burstTimer - dt
+        if state.burstTimer <= 0 then
+            state.isBursting = false
+            state.burstTimer = 0
+        end
+    end
+end
+
+-- ============================================
 -- STAMINA SYSTEM
 -- ============================================
 local function updateStamina(dt)
     local draining = false
-    
+
     -- Sprint drain
     if state.isSprinting and state.moveDirection.Magnitude > 0 and state.isGrounded then
         state.stamina = state.stamina - (Config.SPRINT_DRAIN * dt)
@@ -171,10 +245,12 @@ local function updateStamina(dt)
         draining = true
     end
     
-    -- Check for empty
+    -- Check for empty (only trigger penalty once when first hitting 0)
     if state.stamina <= 0 then
+        if state.penaltyTimer <= 0 then
+            state.penaltyTimer = Config.EMPTY_PENALTY_DURATION
+        end
         state.stamina = 0
-        state.penaltyTimer = Config.EMPTY_PENALTY_DURATION
     end
     
     -- Penalty countdown
@@ -182,13 +258,16 @@ local function updateStamina(dt)
         state.penaltyTimer = state.penaltyTimer - dt
     end
     
-    -- Regeneration
+    -- Regeneration (faster as stamina fills - satisfying to top off)
     if draining then
         state.regenTimer = Config.REGEN_DELAY
     else
         state.regenTimer = math.max(0, state.regenTimer - dt)
         if state.regenTimer <= 0 and state.penaltyTimer <= 0 then
-            state.stamina = math.min(Config.MAX_STAMINA, state.stamina + (Config.REGEN_RATE * dt))
+            -- Progressive regen: slower when empty, faster when nearly full
+            local staminaRatio = state.stamina / Config.MAX_STAMINA
+            local regenRate = Config.REGEN_MIN_RATE + (staminaRatio * (Config.REGEN_MAX_RATE - Config.REGEN_MIN_RATE))
+            state.stamina = math.min(Config.MAX_STAMINA, state.stamina + (regenRate * dt))
         end
     end
 end
@@ -200,24 +279,29 @@ local function calculateTargetSpeed()
     if state.moveDirection.Magnitude == 0 then
         return 0
     end
-    
+
     local target = Config.BASE_SPEED
-    
+
     -- Sprint speed (only if stamina available)
     if state.isSprinting and state.stamina > 0 and state.penaltyTimer <= 0 then
         target = Config.SPRINT_SPEED
     end
-    
+
+    -- Burst speed (overrides sprint)
+    if state.isBursting then
+        target = Config.SPRINT_SPEED * Config.BURST_SPEED_MULT
+    end
+
     -- Empty stamina penalty
     if state.penaltyTimer > 0 then
         target = target * Config.EMPTY_STAMINA_PENALTY
     end
-    
+
     -- Drift speed retention (slower than full sprint, faster than braking)
-    if state.isDrifting and state.isSprinting then
+    if state.isDrifting and state.isSprinting and not state.isBursting then
         target = target * Config.DRIFT_SPEED_RETAIN
     end
-    
+
     return target
 end
 
@@ -226,14 +310,23 @@ local function calculateTurnRate(dt)
     local speedRatio = state.currentSpeed / Config.SPRINT_SPEED
     local turnRate = Config.BASE_TURN_RATE - (speedRatio * (Config.BASE_TURN_RATE - Config.MIN_TURN_RATE))
 
-    -- Drift bonus
-    if state.isDrifting and state.isSprinting and state.isGrounded then
+    -- Burst penalty (commit factor - you're locked into your direction)
+    if state.isBursting then
+        turnRate = turnRate * Config.BURST_TURN_PENALTY
+    end
+
+    -- Drift bonus (only when not bursting)
+    if state.isDrifting and state.isSprinting and state.isGrounded and not state.isBursting then
         turnRate = turnRate * Config.DRIFT_TURN_BONUS
     end
 
-    -- Air penalty
+    -- Air turn rate (enhanced after double jump)
     if not state.isGrounded then
-        turnRate = Config.AIR_TURN_RATE
+        if state.doubleJumpTurnTimer > 0 then
+            turnRate = Config.DOUBLE_JUMP_TURN_RATE  -- Enhanced turning after double jump
+        else
+            turnRate = Config.AIR_TURN_RATE
+        end
     end
 
     -- Convert to radians and multiply by dt for frame-rate independence
@@ -242,23 +335,36 @@ end
 
 local function updateGroundedState()
     if not state.rootPart then return end
-    
+
+    local wasGrounded = state.isGrounded
+
     -- Raycast downward to check ground
     local rayOrigin = state.rootPart.Position
     local rayDirection = Vector3.new(0, -4, 0)
     local rayParams = RaycastParams.new()
     rayParams.FilterDescendantsInstances = {state.character}
     rayParams.FilterType = Enum.RaycastFilterType.Exclude
-    
+
     local result = workspace:Raycast(rayOrigin, rayDirection, rayParams)
     state.isGrounded = (result ~= nil)
+
+    -- Reset double jump state on landing
+    if state.isGrounded and not wasGrounded then
+        state.canDoubleJump = false
+        state.doubleJumpTurnTimer = 0
+    end
 end
 
 local function updateMovement(dt)
     if not state.rootPart or not state.humanoid then return end
-    
+
     state.moveDirection = getMoveDirection()
     updateGroundedState()
+
+    -- Update double jump turn timer
+    if state.doubleJumpTurnTimer > 0 then
+        state.doubleJumpTurnTimer = state.doubleJumpTurnTimer - dt
+    end
     
     -- Target speed
     local targetSpeed = calculateTargetSpeed()
@@ -272,19 +378,26 @@ local function updateMovement(dt)
     state.currentSpeed = math.max(0, state.currentSpeed)
     
     -- Turning (only when moving)
+    local actualTurnRate = 0
     if state.moveDirection.Magnitude > 0 then
         local targetAngle = math.atan2(-state.moveDirection.X, -state.moveDirection.Z)
         local angleDiff = targetAngle - state.facingAngle
-        
+
         -- Normalize angle difference to [-pi, pi]
         while angleDiff > math.pi do angleDiff = angleDiff - (2 * math.pi) end
         while angleDiff < -math.pi do angleDiff = angleDiff + (2 * math.pi) end
-        
+
         -- Apply turn rate limit (frame-rate independent)
         local maxTurn = calculateTurnRate(dt)
         angleDiff = math.clamp(angleDiff, -maxTurn, maxTurn)
         state.facingAngle = state.facingAngle + angleDiff
+
+        -- Track turn rate for tilt (radians per second)
+        if dt > 0 then
+            actualTurnRate = angleDiff / dt
+        end
     end
+    state.turnRate = actualTurnRate
     
     -- Calculate velocity from facing angle and speed
     local facingDir = Vector3.new(-math.sin(state.facingAngle), 0, -math.cos(state.facingAngle))
@@ -305,31 +418,80 @@ local function updateMovement(dt)
         )
     end
     
-    -- Apply to humanoid
-    state.humanoid:Move(state.velocity / Config.BASE_SPEED, false)
+    -- Apply to humanoid - set WalkSpeed dynamically for actual speed changes
+    state.humanoid.WalkSpeed = state.currentSpeed
+    local moveDir = state.velocity.Unit
+    if state.velocity.Magnitude > 0.1 then
+        state.humanoid:Move(moveDir, false)
+    else
+        state.humanoid:Move(Vector3.zero, false)
+    end
     
-    -- Rotate character to face movement direction
+    -- Calculate body tilt based on turn rate and speed
+    local speedRatio = math.clamp(state.currentSpeed / Config.SPRINT_SPEED, 0, 1)
+    local maxTiltRad = math.rad(Config.MAX_TILT_ANGLE)
+    -- Tilt is proportional to turn rate and speed (leaning outward from turn - centrifugal feel)
+    local targetTilt = state.turnRate * speedRatio * 0.3
+    targetTilt = math.clamp(targetTilt, -maxTiltRad, maxTiltRad)
+
+    -- Smooth tilt transition
+    local tiltSmoothing = 1 - math.exp(-Config.TILT_SPEED * dt)
+    state.currentTilt = state.currentTilt + (targetTilt - state.currentTilt) * tiltSmoothing
+
+    -- Rotate character to face movement direction with tilt
     if state.currentSpeed > 1 then
-        state.rootPart.CFrame = CFrame.new(state.rootPart.Position) * CFrame.Angles(0, state.facingAngle, 0)
+        -- Apply yaw (Y) and roll (Z) for leaning outward on turns
+        state.rootPart.CFrame = CFrame.new(state.rootPart.Position)
+            * CFrame.Angles(0, state.facingAngle, 0)
+            * CFrame.Angles(0, 0, state.currentTilt)
     end
 end
 
 local function handleJump()
     if not state.jumpRequested then return end
     state.jumpRequested = false
-    
-    if not state.isGrounded then return end
-    if state.stamina < Config.JUMP_COST and state.penaltyTimer <= 0 then return end
-    
-    -- Deduct stamina
-    if state.penaltyTimer <= 0 then
-        state.stamina = state.stamina - Config.JUMP_COST
+
+    -- Ground jump
+    if state.isGrounded then
+        if state.stamina < Config.JUMP_COST and state.penaltyTimer <= 0 then return end
+
+        -- Deduct stamina
+        if state.penaltyTimer <= 0 then
+            state.stamina = state.stamina - Config.JUMP_COST
+        end
+
+        -- Execute first jump
+        if state.rootPart then
+            state.rootPart.AssemblyLinearVelocity = Vector3.new(
+                state.rootPart.AssemblyLinearVelocity.X,
+                Config.JUMP_POWER,
+                state.rootPart.AssemblyLinearVelocity.Z
+            )
+            state.isGrounded = false
+            state.canDoubleJump = true  -- Enable double jump
+        end
+        return
     end
-    
-    -- Execute jump
-    if state.humanoid then
-        state.humanoid.JumpPower = Config.JUMP_POWER
-        state.humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+
+    -- Double jump (in air)
+    if state.canDoubleJump then
+        if state.stamina < Config.DOUBLE_JUMP_COST and state.penaltyTimer <= 0 then return end
+
+        -- Deduct stamina (25% more than base jump)
+        if state.penaltyTimer <= 0 then
+            state.stamina = state.stamina - Config.DOUBLE_JUMP_COST
+        end
+
+        -- Execute double jump
+        if state.rootPart then
+            state.rootPart.AssemblyLinearVelocity = Vector3.new(
+                state.rootPart.AssemblyLinearVelocity.X,
+                Config.DOUBLE_JUMP_POWER,
+                state.rootPart.AssemblyLinearVelocity.Z
+            )
+            state.canDoubleJump = false  -- Used up double jump
+            state.doubleJumpTurnTimer = Config.DOUBLE_JUMP_TURN_DURATION  -- Enable enhanced air turning
+        end
     end
 end
 
@@ -341,9 +503,11 @@ local function setupCharacter(character)
     state.humanoid = character:WaitForChild("Humanoid")
     state.rootPart = character:WaitForChild("HumanoidRootPart")
     
-    -- Disable default jump (we handle it)
-    state.humanoid.JumpPower = 0
+    -- Configure humanoid for custom movement
+    state.humanoid.WalkSpeed = Config.BASE_SPEED
+    state.humanoid.JumpPower = 0  -- We control jumping manually
     state.humanoid.JumpHeight = 0
+    state.humanoid.AutoJump = false  -- Disable auto-jump on mobile/obstacles
     
     -- Initialize facing angle from current orientation
     local _, y, _ = state.rootPart.CFrame:ToEulerAnglesYXZ()
@@ -454,13 +618,16 @@ local function updateUI()
         staminaFill.BackgroundColor3 = Color3.fromRGB(50, 200, 80)
     end
 
-    -- Speed bar
-    local speedRatio = state.currentSpeed / Config.SPRINT_SPEED
+    -- Speed bar (scale to max burst speed)
+    local maxSpeed = Config.SPRINT_SPEED * Config.BURST_SPEED_MULT
+    local speedRatio = state.currentSpeed / maxSpeed
     speedFill.Size = UDim2.new(math.min(1, speedRatio), 0, 1, 0)
     speedLabel.Text = string.format("%.0f", state.currentSpeed)
 
-    -- Speed color (blue to cyan when sprinting)
-    if state.isSprinting and state.currentSpeed > Config.BASE_SPEED then
+    -- Speed color (blue -> cyan when sprinting -> orange when bursting)
+    if state.isBursting then
+        speedFill.BackgroundColor3 = Color3.fromRGB(255, 140, 50)
+    elseif state.isSprinting and state.currentSpeed > Config.BASE_SPEED then
         speedFill.BackgroundColor3 = Color3.fromRGB(50, 200, 220)
     else
         speedFill.BackgroundColor3 = Color3.fromRGB(80, 150, 220)
@@ -468,9 +635,24 @@ local function updateUI()
 
     -- Status text
     local status = {}
-    if state.isSprinting then table.insert(status, "SPRINT") end
+    if state.isBursting then
+        table.insert(status, "BURST")
+    elseif state.isSprinting then
+        table.insert(status, "SPRINT")
+    end
     if state.isDrifting then table.insert(status, "DRIFT") end
-    if not state.isGrounded then table.insert(status, "AIR") end
+    if not state.isGrounded then
+        if state.doubleJumpTurnTimer > 0 then
+            table.insert(status, "DJUMP")  -- Enhanced air turning active
+        elseif state.canDoubleJump then
+            table.insert(status, "AIR+")   -- Double jump available
+        else
+            table.insert(status, "AIR")
+        end
+    end
+    if state.burstCooldown > 0 and not state.isBursting then
+        table.insert(status, string.format("CD:%.1f", state.burstCooldown))
+    end
     statusLabel.Text = table.concat(status, " | ")
 end
 
@@ -494,6 +676,7 @@ end)
 RunService.RenderStepped:Connect(function(dt)
     if not state.humanoid then return end
 
+    updateBurst(dt)
     updateStamina(dt)
     updateMovement(dt)
     handleJump()
