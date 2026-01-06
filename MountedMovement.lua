@@ -729,8 +729,40 @@ local function updateGroundedState()
     local rayParams = RaycastParams.new()
     rayParams.FilterDescendantsInstances = {horse, state.character}
     rayParams.FilterType = Enum.RaycastFilterType.Exclude
+    rayParams.RespectCanCollide = true
 
     local result = workspace:Raycast(rayOrigin, rayDirection, rayParams)
+
+    -- If raycast didn't hit, also check terrain voxels directly
+    if not result then
+        local terrain = workspace.Terrain
+        if terrain then
+            local checkPos = rayOrigin + Vector3.new(0, -3, 0)
+            local region = Region3.new(
+                checkPos - Vector3.new(2, 2, 2),
+                checkPos + Vector3.new(2, 2, 2)
+            ):ExpandToGrid(4)
+
+            local materials, occupancies = terrain:ReadVoxels(region, 4)
+            local size = materials.Size
+
+            for x = 1, size.X do
+                for y = 1, size.Y do
+                    for z = 1, size.Z do
+                        local material = materials[x][y][z]
+                        local occupancy = occupancies[x][y][z]
+                        if material ~= Enum.Material.Air and material ~= Enum.Material.Water and occupancy > 0.5 then
+                            result = true  -- Terrain found below
+                            break
+                        end
+                    end
+                    if result then break end
+                end
+                if result then break end
+            end
+        end
+    end
+
     state.isGrounded = (result ~= nil)
 
     -- Reset double jump on landing
@@ -741,8 +773,49 @@ local function updateGroundedState()
     end
 end
 
+-- Maximum walkable slope angle (in degrees) - slopes steeper than this are walls
+local MAX_WALKABLE_SLOPE = 50
+
+-- Get the terrain height at a given X, Z position by sampling voxels
+-- Returns the Y position of the TOP of the highest solid terrain, or nil if no terrain
+local function getTerrainHeightAt(x, z, searchFromY)
+    local terrain = workspace.Terrain
+    if not terrain then return nil end
+
+    -- Search in a vertical column
+    local searchHeight = 20
+    local region = Region3.new(
+        Vector3.new(x - 2, searchFromY - searchHeight, z - 2),
+        Vector3.new(x + 2, searchFromY + searchHeight, z + 2)
+    ):ExpandToGrid(4)
+
+    local materials, occupancies = terrain:ReadVoxels(region, 4)
+    local size = materials.Size
+    local regionStart = region.CFrame.Position - region.Size / 2
+
+    local highestY = nil
+    for xi = 1, size.X do
+        for yi = 1, size.Y do
+            for zi = 1, size.Z do
+                local material = materials[xi][yi][zi]
+                local occupancy = occupancies[xi][yi][zi]
+                if material ~= Enum.Material.Air and material ~= Enum.Material.Water and occupancy > 0.3 then
+                    -- Calculate TOP of the voxel (center + half voxel size)
+                    local voxelTop = regionStart.Y + (yi * 4)
+                    if not highestY or voxelTop > highestY then
+                        highestY = voxelTop
+                    end
+                end
+            end
+        end
+    end
+
+    return highestY
+end
+
 -- Check for wall collision in the movement direction
 -- Returns true if movement is blocked, false if clear
+-- Also returns terrain height adjustment for ramps
 local function checkWallCollision(horse, movementDir, distance)
     if not horse or not horse.PrimaryPart then return false end
     if movementDir.Magnitude < 0.01 then return false end
@@ -754,16 +827,74 @@ local function checkWallCollision(horse, movementDir, distance)
     local rayParams = RaycastParams.new()
     rayParams.FilterDescendantsInstances = {horse, state.character}
     rayParams.FilterType = Enum.RaycastFilterType.Exclude
+    rayParams.RespectCanCollide = true
 
-    -- Check at multiple heights to prevent jumping over fences
-    for _, heightOffset in ipairs(Config.WALL_CHECK_HEIGHTS) do
+    -- First check for part-based walls (fences, etc.) at multiple heights
+    -- Only check heights above where a ramp would be (skip ground level for ramp compatibility)
+    local wallCheckHeights = {3, 6, 9, 12}  -- Skip 0 to allow ramp detection
+    for _, heightOffset in ipairs(wallCheckHeights) do
         local rayOrigin = basePos + Vector3.new(0, heightOffset, 0)
         local rayDir = Vector3.new(normalizedDir.X, 0, normalizedDir.Z) * checkDistance
 
         local result = workspace:Raycast(rayOrigin, rayDir, rayParams)
         if result then
-            -- Wall detected at this height
-            return true, result.Position, result.Normal
+            -- Check if this is a walkable slope by examining the surface normal
+            local slopeAngle = math.deg(math.acos(math.abs(result.Normal.Y)))
+            if slopeAngle > MAX_WALKABLE_SLOPE then
+                -- Steep wall - block movement
+                return true, result.Position, result.Normal
+            end
+        end
+    end
+
+    -- Check terrain for walls vs ramps
+    local terrain = workspace.Terrain
+    if terrain then
+        -- Get current terrain height and terrain height at destination
+        local currentTerrainY = getTerrainHeightAt(basePos.X, basePos.Z, basePos.Y)
+        local targetPos = basePos + Vector3.new(normalizedDir.X, 0, normalizedDir.Z) * checkDistance
+        local targetTerrainY = getTerrainHeightAt(targetPos.X, targetPos.Z, basePos.Y)
+
+        if targetTerrainY then
+            local horizontalDist = checkDistance
+            local currentY = currentTerrainY or basePos.Y
+            local heightDiff = targetTerrainY - currentY
+
+            -- Calculate slope angle
+            local slopeAngle = math.deg(math.atan2(math.abs(heightDiff), horizontalDist))
+
+            if slopeAngle > MAX_WALKABLE_SLOPE then
+                -- Terrain is too steep - it's a wall
+                return true, targetPos, -normalizedDir
+            else
+                -- Walkable slope - return the height adjustment needed
+                return false, nil, nil, heightDiff
+            end
+        end
+
+        -- Also check if there's terrain blocking at upper heights (terrain walls)
+        for _, heightOffset in ipairs({6, 9, 12}) do
+            local checkPos = basePos + Vector3.new(0, heightOffset, 0) + Vector3.new(normalizedDir.X, 0, normalizedDir.Z) * checkDistance
+            local region = Region3.new(
+                checkPos - Vector3.new(2, 2, 2),
+                checkPos + Vector3.new(2, 2, 2)
+            ):ExpandToGrid(4)
+
+            local materials, occupancies = terrain:ReadVoxels(region, 4)
+            local size = materials.Size
+
+            for xi = 1, size.X do
+                for yi = 1, size.Y do
+                    for zi = 1, size.Z do
+                        local material = materials[xi][yi][zi]
+                        local occupancy = occupancies[xi][yi][zi]
+                        if material ~= Enum.Material.Air and material ~= Enum.Material.Water and occupancy > 0.5 then
+                            -- Solid terrain at height - it's a wall
+                            return true, checkPos, -normalizedDir
+                        end
+                    end
+                end
+            end
         end
     end
 
@@ -867,14 +998,57 @@ local function updateMovement(dt)
 
     -- Wall collision check - prevent moving into fences/walls
     -- This checks at multiple heights so players can't jump over fences
+    -- Also handles terrain ramps by adjusting vertical position
     local horizontalMovement = Vector3.new(movement.X, 0, movement.Z)
+    local terrainHeightAdjust = 0
     if horizontalMovement.Magnitude > 0.001 then
-        local isBlocked = checkWallCollision(horse, horizontalMovement, horizontalMovement.Magnitude + 1)
+        local isBlocked, _, _, heightDiff = checkWallCollision(horse, horizontalMovement, horizontalMovement.Magnitude + 1)
         if isBlocked then
             -- Stop horizontal movement and velocity when hitting a wall
             movement = Vector3.new(0, 0, 0)
             state.velocity = Vector3.zero
             state.currentSpeed = 0
+        elseif heightDiff and state.isGrounded then
+            -- Walking on a ramp - apply height adjustment smoothly
+            terrainHeightAdjust = heightDiff * (horizontalMovement.Magnitude / Config.WALL_CHECK_DISTANCE)
+        end
+    end
+
+    -- When grounded and moving, follow the ground surface (works for both parts and terrain)
+    if state.isGrounded and state.verticalVelocity <= 0 and horizontalMovement.Magnitude > 0.001 then
+        local targetX = currentPos.X + movement.X
+        local targetZ = currentPos.Z + movement.Z
+
+        -- Raycast downward from target position to find ground surface
+        local rayParams = RaycastParams.new()
+        rayParams.FilterDescendantsInstances = {horse, state.character}
+        rayParams.FilterType = Enum.RaycastFilterType.Exclude
+        rayParams.RespectCanCollide = true
+
+        -- Cast from above to find the ground at target position
+        local rayStart = Vector3.new(targetX, currentPos.Y + 5, targetZ)
+        local rayDir = Vector3.new(0, -15, 0)
+        local groundHit = workspace:Raycast(rayStart, rayDir, rayParams)
+
+        if groundHit then
+            -- Found ground (part-based ramp, floor, etc.)
+            local targetY = groundHit.Position.Y + 3  -- Horse height above surface
+            local heightDelta = targetY - currentPos.Y
+
+            -- Check if this is a walkable slope
+            local slopeAngle = math.deg(math.acos(groundHit.Normal.Y))
+            if slopeAngle <= MAX_WALKABLE_SLOPE then
+                -- Smoothly follow the ground surface
+                verticalMovement = heightDelta * math.min(1, dt * 10)
+            end
+        else
+            -- No part hit, check terrain
+            local terrainY = getTerrainHeightAt(targetX, targetZ, currentPos.Y)
+            if terrainY and math.abs(terrainY - currentPos.Y) < 8 then
+                local targetY = terrainY + 3
+                local heightDelta = targetY - currentPos.Y
+                verticalMovement = heightDelta * math.min(1, dt * 10)
+            end
         end
     end
 
@@ -883,10 +1057,51 @@ local function updateMovement(dt)
         local rayParams = RaycastParams.new()
         rayParams.FilterDescendantsInstances = {horse, state.character}
         rayParams.FilterType = Enum.RaycastFilterType.Exclude
+        rayParams.RespectCanCollide = true
 
         local result = workspace:Raycast(currentPos, Vector3.new(0, verticalMovement - 0.5, 0), rayParams)
+
+        -- Also check terrain voxels for landing on terrain bridges
+        local terrainLandingY = nil
+        if not result then
+            local terrain = workspace.Terrain
+            if terrain then
+                local checkPos = currentPos + Vector3.new(0, verticalMovement - 0.5, 0)
+                local region = Region3.new(
+                    checkPos - Vector3.new(2, 2, 2),
+                    checkPos + Vector3.new(2, 2, 2)
+                ):ExpandToGrid(4)
+
+                local materials, occupancies = terrain:ReadVoxels(region, 4)
+                local size = materials.Size
+                local regionStart = region.CFrame.Position - region.Size / 2
+
+                for x = 1, size.X do
+                    for y = 1, size.Y do
+                        for z = 1, size.Z do
+                            local material = materials[x][y][z]
+                            local occupancy = occupancies[x][y][z]
+                            if material ~= Enum.Material.Air and material ~= Enum.Material.Water and occupancy > 0.5 then
+                                -- Calculate the TOP of this voxel
+                                local voxelTop = regionStart.Y + (y * 4)
+                                if not terrainLandingY or voxelTop > terrainLandingY then
+                                    terrainLandingY = voxelTop
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+
         if result then
-            verticalMovement = result.Position.Y - currentPos.Y + 2 -- Keep horse above ground
+            verticalMovement = result.Position.Y - currentPos.Y + 3 -- Keep horse above ground
+            state.verticalVelocity = 0
+            state.isGrounded = true
+            state.canDoubleJump = false
+            state.doubleJumpTurnTimer = 0
+        elseif terrainLandingY then
+            verticalMovement = terrainLandingY - currentPos.Y + 3 -- Keep horse above terrain
             state.verticalVelocity = 0
             state.isGrounded = true
             state.canDoubleJump = false
