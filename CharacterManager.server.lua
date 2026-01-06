@@ -147,18 +147,36 @@ local function applyCharacterModel(player, characterId)
         costumeHumanoid:Destroy()
     end
 
+    -- Set PrimaryPart for positioning
+    costumeModel.PrimaryPart = costumeRoot
+
+    -- Position costume at player's location before welding
+    costumeModel:PivotTo(rootPart.CFrame)
+
     -- Parent costume to character
     costumeModel.Parent = character
 
-    -- Weld costume to player's HumanoidRootPart
-    local weld = Instance.new("Weld")
-    weld.Name = "CostumeWeld"
-    weld.Part0 = rootPart
-    weld.Part1 = costumeRoot
-    -- Offset if needed (adjust Y if costume sits too high/low)
-    weld.C0 = CFrame.new(0, 0, 0)
-    weld.C1 = CFrame.new(0, 0, 0)
-    weld.Parent = rootPart
+    -- Weld ALL costume parts to player's HumanoidRootPart
+    -- This ensures the entire costume moves as one unit with the player
+    local rootCFrame = costumeRoot.CFrame
+    for _, part in ipairs(costumeModel:GetDescendants()) do
+        if part:IsA("BasePart") then
+            -- Remove any existing AccessoryWeld (for Accessory Handles)
+            local existingWeld = part:FindFirstChild("AccessoryWeld")
+            if existingWeld then
+                existingWeld:Destroy()
+            end
+
+            local weld = Instance.new("Weld")
+            weld.Name = "CostumeWeld_" .. part.Name
+            weld.Part0 = rootPart
+            weld.Part1 = part
+            -- Maintain the part's position relative to the costume root
+            weld.C0 = CFrame.new(0, 0, 0)
+            weld.C1 = rootCFrame:ToObjectSpace(part.CFrame)
+            weld.Parent = part
+        end
+    end
 
     -- Store reference
     playerCharacterModels[player] = costumeModel
