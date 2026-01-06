@@ -10,6 +10,7 @@
     - Shift (double-tap): Burst (speed boost, costs stamina)
     - Space: Jump (press again in air for double jump with enhanced turning)
     - Q: Drift (hold to lock momentum, turn to aim, release for sharp turn)
+    - F: Character ability (Hot Pants only - Phase Shift)
     - X: Dismount
 ]]
 
@@ -26,6 +27,10 @@ local camera = workspace.CurrentCamera
 local MountEvents = ReplicatedStorage:WaitForChild("MountEvents")
 local MountHorse = MountEvents:WaitForChild("MountHorse")
 local DismountHorse = MountEvents:WaitForChild("DismountHorse")
+
+-- Wait for character selection system
+local SelectionEvents = ReplicatedStorage:WaitForChild("SelectionEvents")
+local GetCharacterData = SelectionEvents:WaitForChild("GetCharacterData")
 
 -- ============================================
 -- TUNING VALUES (tweak these)
@@ -85,6 +90,44 @@ local Config = {
 
     -- Rider positioning
     RIDER_HEIGHT_OFFSET = 4,   -- How high above horse body the rider sits
+}
+
+-- Store default config for reset
+local DefaultConfig = {}
+for k, v in pairs(Config) do
+    DefaultConfig[k] = v
+end
+
+-- ============================================
+-- CHARACTER DATA (loaded from server)
+-- ============================================
+local characterData = {
+    id = nil,
+    stats = {},
+    abilityParams = {},
+    ability = nil,
+}
+
+-- ============================================
+-- ABILITY STATE
+-- ============================================
+local abilityState = {
+    -- Gyro: Precision Burst
+    precisionBurstActive = false,
+
+    -- Diego: Drift Surge
+    driftStartTime = 0,
+    driftSurgeActive = false,
+    driftSurgeTimer = 0,
+    driftSurgeSpeedMult = 1,
+
+    -- Hot Pants: Phase Shift
+    blinkCooldown = 0,
+    blinkRequested = false,
+
+    -- Sandman: Momentum
+    momentumBonus = 0,
+    cruiseTimer = 0,
 }
 
 -- ============================================
@@ -204,6 +247,16 @@ local function bindMountedInputs()
         end
         return Enum.ContextActionResult.Sink
     end, false, Enum.KeyCode.X)
+
+    -- Ability key (Hot Pants: Phase Shift)
+    ContextActionService:BindAction("AbilityKey", function(_, inputState)
+        if inputState == Enum.UserInputState.Begin then
+            if characterData.id == "HotPants" then
+                abilityState.blinkRequested = true
+            end
+        end
+        return Enum.ContextActionResult.Pass
+    end, false, Enum.KeyCode.F)
 end
 
 local function unbindMountedInputs()
@@ -211,6 +264,7 @@ local function unbindMountedInputs()
     ContextActionService:UnbindAction("MountedDrift")
     ContextActionService:UnbindAction("MountedJump")
     ContextActionService:UnbindAction("Dismount")
+    ContextActionService:UnbindAction("AbilityKey")
     state.isSprinting = false
     state.isDrifting = false
     state.jumpRequested = false
@@ -239,6 +293,51 @@ local function getInput()
 end
 
 -- ============================================
+-- CHARACTER DATA LOADING
+-- ============================================
+local function loadCharacterData()
+    local data = GetCharacterData:InvokeServer()
+    if data then
+        characterData.id = data.id
+        characterData.stats = data.stats or {}
+        characterData.abilityParams = data.abilityParams or {}
+        characterData.ability = data.ability
+        print("[MountedMovement] Loaded character:", data.id, "Ability:", data.ability)
+    else
+        print("[MountedMovement] No character data - using defaults")
+    end
+end
+
+local function applyCharacterStats()
+    -- Reset to defaults first
+    for k, v in pairs(DefaultConfig) do
+        Config[k] = v
+    end
+
+    -- Apply character-specific stats
+    for stat, value in pairs(characterData.stats) do
+        if Config[stat] ~= nil then
+            Config[stat] = value
+        end
+    end
+
+    -- Reset stamina to new max
+    state.stamina = Config.MAX_STAMINA
+end
+
+local function resetAbilityState()
+    abilityState.precisionBurstActive = false
+    abilityState.driftStartTime = 0
+    abilityState.driftSurgeActive = false
+    abilityState.driftSurgeTimer = 0
+    abilityState.driftSurgeSpeedMult = 1
+    abilityState.blinkCooldown = 0
+    abilityState.blinkRequested = false
+    abilityState.momentumBonus = 0
+    abilityState.cruiseTimer = 0
+end
+
+-- ============================================
 -- BURST SYSTEM
 -- ============================================
 local function updateBurst(dt)
@@ -253,6 +352,190 @@ local function updateBurst(dt)
             state.burstTimer = 0
         end
     end
+end
+
+-- ============================================
+-- CHARACTER ABILITIES
+-- ============================================
+
+-- Gyro: Precision Burst - stronger at high stamina + better turning
+local function getGyroBurstMultiplier()
+    if characterData.id ~= "Gyro" then return 1 end
+
+    local params = characterData.abilityParams
+    local staminaRatio = state.stamina / Config.MAX_STAMINA
+
+    if staminaRatio >= (params.staminaThreshold or 0.8) then
+        return params.maxStaminaBurstMult or 1.6
+    else
+        -- Lerp between low and max based on stamina
+        local t = staminaRatio / (params.staminaThreshold or 0.8)
+        local lowMult = params.lowStaminaBurstMult or 1.2
+        local highMult = params.maxStaminaBurstMult or 1.6
+        return lowMult + (highMult - lowMult) * t
+    end
+end
+
+local function getGyroBurstTurnBonus()
+    if characterData.id ~= "Gyro" or not state.isBursting then return 1 end
+    return characterData.abilityParams.burstTurnBonus or 1.5
+end
+
+-- Diego: Launch Jump - supercharged jumps during burst
+local function getDiegoJumpMultiplier()
+    if characterData.id ~= "Diego" or not state.isBursting then return 1 end
+    return characterData.abilityParams.burstJumpMult or 1.8
+end
+
+local function getDiegoDoubleJumpMultiplier()
+    if characterData.id ~= "Diego" or not state.isBursting then return 1 end
+    return characterData.abilityParams.burstDoubleJumpMult or 2.0
+end
+
+-- Johnny: Drift Surge - speed boost on drift exit
+local function updateJohnnyAbility(dt)
+    if characterData.id ~= "Johnny" then return end
+
+    local params = characterData.abilityParams
+
+    -- Track drift duration
+    local activeDrift = state.isDrifting and state.isSprinting and state.isGrounded and not state.isBursting
+
+    if activeDrift and not state.wasDrifting then
+        -- Started drifting
+        abilityState.driftStartTime = tick()
+    elseif state.wasDrifting and not activeDrift and abilityState.driftStartTime > 0 then
+        -- Ended drift - calculate boost
+        local driftDuration = tick() - abilityState.driftStartTime
+        local maxDriftTime = params.driftTimeForMaxBoost or 1.5
+        local t = math.clamp(driftDuration / maxDriftTime, 0, 1)
+
+        local baseBoost = params.driftBoostBase or 1.15
+        local maxBoost = params.driftBoostMax or 1.4
+        abilityState.driftSurgeSpeedMult = baseBoost + (maxBoost - baseBoost) * t
+        abilityState.driftSurgeActive = true
+        abilityState.driftSurgeTimer = params.driftBoostDuration or 1.2
+        abilityState.driftStartTime = 0
+    end
+
+    -- Update surge timer
+    if abilityState.driftSurgeActive then
+        abilityState.driftSurgeTimer = abilityState.driftSurgeTimer - dt
+        if abilityState.driftSurgeTimer <= 0 then
+            abilityState.driftSurgeActive = false
+            abilityState.driftSurgeSpeedMult = 1
+        end
+    end
+end
+
+local function getJohnnyDriftSurgeMultiplier()
+    if characterData.id ~= "Johnny" or not abilityState.driftSurgeActive then return 1 end
+    return abilityState.driftSurgeSpeedMult
+end
+
+-- Hot Pants: Phase Shift - blink forward
+local function tryBlink()
+    if characterData.id ~= "HotPants" then return false end
+    if abilityState.blinkCooldown > 0 then return false end
+
+    local params = characterData.abilityParams
+    local cost = params.blinkStaminaCost or 25
+
+    if state.stamina < cost then return false end
+
+    local horse = state.currentHorse
+    if not horse or not horse.PrimaryPart then return false end
+
+    -- Consume stamina
+    state.stamina = state.stamina - cost
+
+    -- Calculate blink destination
+    local distance = params.blinkDistance or 18
+    local facingDir = Vector3.new(-math.sin(state.facingAngle), 0, -math.cos(state.facingAngle))
+    local currentPos = horse.PrimaryPart.Position
+    local targetPos = currentPos + facingDir * distance
+
+    -- Raycast to check for obstacles
+    local rayParams = RaycastParams.new()
+    rayParams.FilterDescendantsInstances = {horse, state.character}
+    rayParams.FilterType = Enum.RaycastFilterType.Exclude
+
+    local result = workspace:Raycast(currentPos, facingDir * distance, rayParams)
+    if result then
+        -- Hit something, blink to just before it
+        targetPos = result.Position - facingDir * 2
+    end
+
+    -- Check ground at target position
+    local groundRay = workspace:Raycast(targetPos + Vector3.new(0, 10, 0), Vector3.new(0, -20, 0), rayParams)
+    if groundRay then
+        targetPos = Vector3.new(targetPos.X, groundRay.Position.Y + 2, targetPos.Z)
+    end
+
+    -- Teleport horse
+    local newCFrame = CFrame.new(targetPos) * CFrame.Angles(0, state.facingAngle, 0)
+    horse:PivotTo(newCFrame)
+
+    -- Maintain momentum (or boost it)
+    local momentumRetain = params.blinkMomentumRetain or 1.0
+    state.velocity = state.velocity * momentumRetain
+
+    -- Set cooldown
+    abilityState.blinkCooldown = params.blinkCooldown or 4.0
+
+    print("[MountedMovement] Phase Shift activated!")
+    return true
+end
+
+local function updateBlinkCooldown(dt)
+    if characterData.id ~= "HotPants" then return end
+
+    if abilityState.blinkCooldown > 0 then
+        abilityState.blinkCooldown = abilityState.blinkCooldown - dt
+    end
+
+    if abilityState.blinkRequested then
+        abilityState.blinkRequested = false
+        tryBlink()
+    end
+end
+
+-- Sandman: Momentum - build speed while cruising
+local function updateSandmanAbility(dt)
+    if characterData.id ~= "Sandman" then return end
+
+    local params = characterData.abilityParams
+    local threshold = params.cruiseSpeedThreshold or 0.6
+    local minCruiseSpeed = Config.BASE_SPEED * threshold
+
+    -- Check if cruising (moving forward, not sprinting, above threshold)
+    local isCruising = state.moveInput > 0
+        and not state.isSprinting
+        and state.currentSpeed >= minCruiseSpeed
+        and state.isGrounded
+
+    if isCruising then
+        -- Build momentum
+        local buildRate = params.momentumBuildRate or 0.08
+        local maxBonus = params.momentumMaxBonus or 15
+        abilityState.momentumBonus = math.min(maxBonus, abilityState.momentumBonus + buildRate * dt * 60)
+    else
+        -- Decay momentum (unless sprinting and sprintResetsBonus is false)
+        local shouldDecay = true
+        if state.isSprinting and not (params.sprintResetsBonus == true) then
+            shouldDecay = false -- Keep momentum while sprinting
+        end
+
+        if shouldDecay then
+            local decayRate = params.momentumDecayRate or 0.3
+            abilityState.momentumBonus = math.max(0, abilityState.momentumBonus - decayRate * dt * 60)
+        end
+    end
+end
+
+local function getSandmanMomentumBonus()
+    if characterData.id ~= "Sandman" then return 0 end
+    return abilityState.momentumBonus
 end
 
 -- ============================================
@@ -305,13 +588,20 @@ local function calculateTargetSpeed()
 
     local target = Config.BASE_SPEED
 
+    -- Sandman: Add momentum bonus to base speed
+    target = target + getSandmanMomentumBonus()
+
     if state.isSprinting and state.stamina > 0 and state.penaltyTimer <= 0 and state.moveInput > 0 then
-        target = Config.SPRINT_SPEED
+        target = Config.SPRINT_SPEED + getSandmanMomentumBonus()
     end
 
     if state.isBursting then
-        target = Config.SPRINT_SPEED * Config.BURST_SPEED_MULT
+        local burstMult = Config.BURST_SPEED_MULT * getGyroBurstMultiplier()
+        target = Config.SPRINT_SPEED * burstMult
     end
+
+    -- Johnny: Apply drift surge multiplier
+    target = target * getJohnnyDriftSurgeMultiplier()
 
     if state.penaltyTimer > 0 then
         target = target * Config.EMPTY_STAMINA_PENALTY
@@ -330,6 +620,8 @@ local function calculateTurnRate(dt)
 
     if state.isBursting then
         turnRate = turnRate * Config.BURST_TURN_PENALTY
+        -- Gyro: Better turning during burst
+        turnRate = turnRate * getGyroBurstTurnBonus()
     end
 
     if state.isDrifting and state.isSprinting and state.isGrounded and not state.isBursting then
@@ -507,7 +799,17 @@ local function handleJump()
             state.stamina = state.stamina - Config.JUMP_COST
         end
 
-        state.verticalVelocity = Config.JUMP_POWER
+        -- Diego: Supercharged jump during burst
+        local jumpPower = Config.JUMP_POWER * getDiegoJumpMultiplier()
+        state.verticalVelocity = jumpPower
+
+        -- Diego: Also boost horizontal speed during burst jump
+        if characterData.id == "Diego" and state.isBursting then
+            local params = characterData.abilityParams
+            local speedBoost = params.launchSpeedBoost or 1.2
+            state.currentSpeed = state.currentSpeed * speedBoost
+        end
+
         state.isGrounded = false
         state.canDoubleJump = true
         state.jumpGraceTimer = 0.15
@@ -521,7 +823,9 @@ local function handleJump()
             state.stamina = state.stamina - Config.DOUBLE_JUMP_COST
         end
 
-        state.verticalVelocity = Config.DOUBLE_JUMP_POWER
+        -- Diego: Even more supercharged double jump during burst
+        local doubleJumpPower = Config.DOUBLE_JUMP_POWER * getDiegoDoubleJumpMultiplier()
+        state.verticalVelocity = doubleJumpPower
         state.canDoubleJump = false
         state.doubleJumpTurnTimer = Config.DOUBLE_JUMP_TURN_DURATION
     end
@@ -659,6 +963,22 @@ local function updateUI()
     if state.burstCooldown > 0 and not state.isBursting then
         table.insert(status, string.format("CD:%.1f", state.burstCooldown))
     end
+
+    -- Character-specific ability status
+    if characterData.id == "Johnny" and abilityState.driftSurgeActive then
+        table.insert(status, string.format("SURGE:%.1f", abilityState.driftSurgeTimer))
+    end
+    if characterData.id == "HotPants" then
+        if abilityState.blinkCooldown > 0 then
+            table.insert(status, string.format("[F]:%.1f", abilityState.blinkCooldown))
+        else
+            table.insert(status, "[F]RDY")
+        end
+    end
+    if characterData.id == "Sandman" and abilityState.momentumBonus > 0 then
+        table.insert(status, string.format("MTM:+%.0f", abilityState.momentumBonus))
+    end
+
     statusLabel.Text = table.concat(status, " | ")
 end
 
@@ -697,6 +1017,11 @@ local function mount(horse)
     if state.isMounted then return end
     if not state.humanoid or not state.rootPart then return end
     if not horse or not horse.PrimaryPart then return end
+
+    -- Load character data from server and apply stats
+    loadCharacterData()
+    applyCharacterStats()
+    resetAbilityState()
 
     state.isMounted = true
     state.currentHorse = horse
@@ -745,7 +1070,7 @@ local function mount(horse)
         screenGui.Enabled = true
     end
 
-    print("[MountedMovement] Mounted horse")
+    print("[MountedMovement] Mounted horse as", characterData.id or "default")
 end
 
 function dismount()
@@ -841,10 +1166,20 @@ end)
 RunService.RenderStepped:Connect(function(dt)
     if not state.isMounted then return end
 
+    -- Core systems
     updateBurst(dt)
     updateStamina(dt)
+
+    -- Character abilities (before movement so they can affect speed)
+    updateJohnnyAbility(dt)
+    updateBlinkCooldown(dt)
+    updateSandmanAbility(dt)
+
+    -- Movement and physics
     updateMovement(dt)
     handleJump()
+
+    -- Camera and UI
     updateCamera(dt)
     updateUI()
 end)
