@@ -93,6 +93,13 @@ local function applyCharacterModel(player, characterId)
     -- Prepare new model
     newModel.Name = oldCharacterName
 
+    -- CRITICAL: Unanchor all parts in the model (inventory models are often anchored)
+    for _, part in ipairs(newModel:GetDescendants()) do
+        if part:IsA("BasePart") then
+            part.Anchored = false
+        end
+    end
+
     -- Ensure the new model has required components
     local newRootPart = newModel:FindFirstChild("HumanoidRootPart")
     if not newRootPart then
@@ -104,6 +111,7 @@ local function applyCharacterModel(player, characterId)
             newRootPart.Size = Vector3.new(2, 2, 1)
             newRootPart.Transparency = 1
             newRootPart.CanCollide = false
+            newRootPart.Anchored = false
             newRootPart.CFrame = torso.CFrame
             newRootPart.Parent = newModel
 
@@ -118,6 +126,7 @@ local function applyCharacterModel(player, characterId)
 
     if newRootPart then
         newRootPart.CFrame = currentCFrame
+        newRootPart.Anchored = false
     end
 
     -- Ensure humanoid exists
