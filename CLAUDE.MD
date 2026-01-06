@@ -1,5 +1,70 @@
 # Project Roadmap
 
+## Selectable Characters
+
+### Character System Overview
+Players can select different mounts before each race. Each mount has distinct stats that create different playstyles and strategic trade-offs. Character diversity encourages players to experiment and find mounts that match their skill level and preferred racing style.
+
+### Current Characters
+
+#### Standard Horse (Default)
+**Playstyle:** Balanced all-rounder, good for learning the mechanics
+
+| Stat Category | Stat | Value | Notes |
+|---------------|------|-------|-------|
+| **Speed** | Base Speed | 40 | Walking speed |
+| | Sprint Speed | 80 | Full gallop (2x base) |
+| | Acceleration | 1.2 | Lower = more horse-like buildup |
+| | Deceleration | 3.0 | How fast you slow down |
+| | Empty Stamina Penalty | 0.7x | Speed multiplier when stamina depleted |
+| **Stamina** | Max Stamina | 100 | Total stamina pool |
+| | Sprint Drain | 15/sec | Drain while sprinting |
+| | Jump Cost | 20 | Per jump |
+| | Double Jump Cost | 25 | Per double jump |
+| | Regen (Low) | 8/sec | When stamina is low |
+| | Regen (High) | 45/sec | Fast top-off when high |
+| | Regen Delay | 0.5s | Before regen starts |
+| | Empty Penalty Duration | 2s | Slowdown after emptying stamina |
+| **Turning** | Base Turn Rate | 150°/sec | At low speed |
+| | Min Turn Rate | 60°/sec | At max speed |
+| | Drift Turn Bonus | 2.0x | Multiplier while drifting |
+| | Drift Speed Retain | 92% | Speed kept after drift release |
+| | Drift Stamina Drain | 8/sec | Extra drain while drifting |
+| **Jumping** | Jump Power | 66 | Base jump height |
+| | Double Jump Power | 55 | Second jump (slightly less) |
+| | Air Turn Rate | 15°/sec | Normal air turning |
+| | Double Jump Turn Rate | 120°/sec | Enhanced air control |
+| | Double Jump Turn Duration | 0.8s | How long enhanced turning lasts |
+| | Air Control | 0.15 | Influence on air velocity (0-1) |
+| **Burst** | Burst Speed Mult | 1.4x | Speed boost during burst |
+| | Burst Duration | 1.5s | How long burst lasts |
+| | Burst Cost | 25 stamina | To trigger burst |
+| | Burst Cooldown | 3.0s | Before burst available again |
+| | Burst Tap Window | 0.3s | Double-tap timing |
+| | Burst Turn Penalty | 0.4x | Reduced turning during burst |
+
+---
+
+### Planned Characters
+
+*Add new character entries here following the same format. Each character should have:*
+- **Name and type** (e.g., "Swift Stallion", "Armored Destrier")
+- **Playstyle description** (e.g., "Glass cannon - high speed, low stamina")
+- **Stat table** with variations from the Standard Horse
+
+#### Character Design Guidelines
+When designing new characters, consider these archetypes:
+
+| Archetype | Speed | Stamina | Turning | Burst | Best For |
+|-----------|-------|---------|---------|-------|----------|
+| **Speedster** | High | Low | Low | Strong | Straightaways, experienced players |
+| **Tank** | Low | High | High | Weak | Technical tracks, consistent runs |
+| **Drifter** | Medium | Medium | Very High | Medium | Tracks with tight turns |
+| **Sprinter** | Medium | Low | Medium | Very Strong | Short bursts, comeback potential |
+| **Endurance** | Low-Medium | Very High | Medium | Weak | Long tracks, stamina management |
+
+---
+
 ## MVP vs Reach Goals
 
 ### ✅ MVP — Ship With These
