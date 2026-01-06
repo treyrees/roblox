@@ -351,6 +351,11 @@ local function updateGroundedState()
     local horse = state.currentHorse
     if not horse or not horse.PrimaryPart then return end
 
+    -- Skip ground detection during jump grace period (prevents false landing right after jump)
+    if state.jumpGraceTimer > 0 then
+        return
+    end
+
     local wasGrounded = state.isGrounded
 
     local rayOrigin = horse.PrimaryPart.Position
@@ -362,7 +367,8 @@ local function updateGroundedState()
     local result = workspace:Raycast(rayOrigin, rayDirection, rayParams)
     state.isGrounded = (result ~= nil)
 
-    if state.isGrounded and not wasGrounded and state.jumpGraceTimer <= 0 then
+    -- Reset double jump on landing
+    if state.isGrounded and not wasGrounded then
         state.canDoubleJump = false
         state.doubleJumpTurnTimer = 0
         state.verticalVelocity = 0
