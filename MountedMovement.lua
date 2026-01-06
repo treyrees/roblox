@@ -1,10 +1,11 @@
 --[[
     MountedMovement.lua
-    Base prototype for horse-mounted racing movement
-    
+    Horse-mounted racing movement with burst and body tilt
+
     Controls:
     - WASD: Movement
     - Shift: Sprint (hold)
+    - Shift (double-tap): Burst (speed boost, costs stamina)
     - Space: Jump
     - Q: Drift (hold while turning)
 ]]
@@ -50,6 +51,17 @@ local Config = {
     
     -- Feel
     MOMENTUM_FACTOR = 0.92,    -- How much velocity carries frame-to-frame (0.9-0.99)
+
+    -- Burst (double-tap sprint)
+    BURST_SPEED_MULT = 1.4,    -- Speed multiplier during burst (1.4x sprint = 4.2x base)
+    BURST_DURATION = 1.5,      -- How long burst lasts (seconds)
+    BURST_COST = 25,           -- Stamina cost to trigger burst
+    BURST_COOLDOWN = 3.0,      -- Seconds before burst can be used again
+    BURST_TAP_WINDOW = 0.3,    -- Seconds to double-tap for burst
+
+    -- Body Tilt
+    MAX_TILT_ANGLE = 15,       -- Maximum lean angle in degrees
+    TILT_SPEED = 8,            -- How fast tilt responds (higher = snappier)
 }
 
 -- ============================================
@@ -72,7 +84,17 @@ local state = {
     stamina = Config.MAX_STAMINA,
     regenTimer = 0,
     penaltyTimer = 0,
-    
+
+    -- Burst
+    lastSprintTap = 0,         -- Time of last sprint key press
+    isBursting = false,
+    burstTimer = 0,            -- Remaining burst duration
+    burstCooldown = 0,         -- Cooldown until next burst
+
+    -- Tilt
+    currentTilt = 0,           -- Current body roll angle (radians)
+    turnRate = 0,              -- Current turn rate for tilt calculation
+
     -- References
     character = nil,
     humanoid = nil,
@@ -82,10 +104,31 @@ local state = {
 -- ============================================
 -- INPUT HANDLING
 -- ============================================
+local function tryTriggerBurst()
+    -- Check if burst can be triggered
+    if state.burstCooldown > 0 then return false end
+    if state.stamina < Config.BURST_COST then return false end
+    if state.penaltyTimer > 0 then return false end
+    if not state.isGrounded then return false end
+
+    -- Trigger burst
+    state.isBursting = true
+    state.burstTimer = Config.BURST_DURATION
+    state.burstCooldown = Config.BURST_COOLDOWN
+    state.stamina = state.stamina - Config.BURST_COST
+    return true
+end
+
 local function bindInputs()
-    -- Sprint (explicit Begin/End handling for reliability)
+    -- Sprint (with double-tap burst detection)
     ContextActionService:BindAction("Sprint", function(_, inputState)
         if inputState == Enum.UserInputState.Begin then
+            local now = tick()
+            -- Check for double-tap
+            if (now - state.lastSprintTap) <= Config.BURST_TAP_WINDOW then
+                tryTriggerBurst()
+            end
+            state.lastSprintTap = now
             state.isSprinting = true
         elseif inputState == Enum.UserInputState.End then
             state.isSprinting = false
@@ -120,6 +163,8 @@ local function unbindInputs()
     state.isSprinting = false
     state.isDrifting = false
     state.jumpRequested = false
+    state.isBursting = false
+    state.burstTimer = 0
 end
 
 local function getMoveDirection()
@@ -154,11 +199,30 @@ local function getMoveDirection()
 end
 
 -- ============================================
+-- BURST SYSTEM
+-- ============================================
+local function updateBurst(dt)
+    -- Update cooldown
+    if state.burstCooldown > 0 then
+        state.burstCooldown = state.burstCooldown - dt
+    end
+
+    -- Update active burst
+    if state.isBursting then
+        state.burstTimer = state.burstTimer - dt
+        if state.burstTimer <= 0 then
+            state.isBursting = false
+            state.burstTimer = 0
+        end
+    end
+end
+
+-- ============================================
 -- STAMINA SYSTEM
 -- ============================================
 local function updateStamina(dt)
     local draining = false
-    
+
     -- Sprint drain
     if state.isSprinting and state.moveDirection.Magnitude > 0 and state.isGrounded then
         state.stamina = state.stamina - (Config.SPRINT_DRAIN * dt)
@@ -202,24 +266,29 @@ local function calculateTargetSpeed()
     if state.moveDirection.Magnitude == 0 then
         return 0
     end
-    
+
     local target = Config.BASE_SPEED
-    
+
     -- Sprint speed (only if stamina available)
     if state.isSprinting and state.stamina > 0 and state.penaltyTimer <= 0 then
         target = Config.SPRINT_SPEED
     end
-    
+
+    -- Burst speed (overrides sprint)
+    if state.isBursting then
+        target = Config.SPRINT_SPEED * Config.BURST_SPEED_MULT
+    end
+
     -- Empty stamina penalty
     if state.penaltyTimer > 0 then
         target = target * Config.EMPTY_STAMINA_PENALTY
     end
-    
+
     -- Drift speed retention (slower than full sprint, faster than braking)
-    if state.isDrifting and state.isSprinting then
+    if state.isDrifting and state.isSprinting and not state.isBursting then
         target = target * Config.DRIFT_SPEED_RETAIN
     end
-    
+
     return target
 end
 
@@ -274,19 +343,26 @@ local function updateMovement(dt)
     state.currentSpeed = math.max(0, state.currentSpeed)
     
     -- Turning (only when moving)
+    local actualTurnRate = 0
     if state.moveDirection.Magnitude > 0 then
         local targetAngle = math.atan2(-state.moveDirection.X, -state.moveDirection.Z)
         local angleDiff = targetAngle - state.facingAngle
-        
+
         -- Normalize angle difference to [-pi, pi]
         while angleDiff > math.pi do angleDiff = angleDiff - (2 * math.pi) end
         while angleDiff < -math.pi do angleDiff = angleDiff + (2 * math.pi) end
-        
+
         -- Apply turn rate limit (frame-rate independent)
         local maxTurn = calculateTurnRate(dt)
         angleDiff = math.clamp(angleDiff, -maxTurn, maxTurn)
         state.facingAngle = state.facingAngle + angleDiff
+
+        -- Track turn rate for tilt (radians per second)
+        if dt > 0 then
+            actualTurnRate = angleDiff / dt
+        end
     end
+    state.turnRate = actualTurnRate
     
     -- Calculate velocity from facing angle and speed
     local facingDir = Vector3.new(-math.sin(state.facingAngle), 0, -math.cos(state.facingAngle))
@@ -316,9 +392,23 @@ local function updateMovement(dt)
         state.humanoid:Move(Vector3.zero, false)
     end
     
-    -- Rotate character to face movement direction
+    -- Calculate body tilt based on turn rate and speed
+    local speedRatio = math.clamp(state.currentSpeed / Config.SPRINT_SPEED, 0, 1)
+    local maxTiltRad = math.rad(Config.MAX_TILT_ANGLE)
+    -- Tilt is proportional to turn rate and speed (faster = more tilt when turning)
+    local targetTilt = -state.turnRate * speedRatio * 0.3  -- Negative because leaning into turn
+    targetTilt = math.clamp(targetTilt, -maxTiltRad, maxTiltRad)
+
+    -- Smooth tilt transition
+    local tiltSmoothing = 1 - math.exp(-Config.TILT_SPEED * dt)
+    state.currentTilt = state.currentTilt + (targetTilt - state.currentTilt) * tiltSmoothing
+
+    -- Rotate character to face movement direction with tilt
     if state.currentSpeed > 1 then
-        state.rootPart.CFrame = CFrame.new(state.rootPart.Position) * CFrame.Angles(0, state.facingAngle, 0)
+        -- Apply yaw (Y) and roll (Z) for leaning into turns
+        state.rootPart.CFrame = CFrame.new(state.rootPart.Position)
+            * CFrame.Angles(0, state.facingAngle, 0)
+            * CFrame.Angles(0, 0, state.currentTilt)
     end
 end
 
@@ -469,13 +559,16 @@ local function updateUI()
         staminaFill.BackgroundColor3 = Color3.fromRGB(50, 200, 80)
     end
 
-    -- Speed bar
-    local speedRatio = state.currentSpeed / Config.SPRINT_SPEED
+    -- Speed bar (scale to max burst speed)
+    local maxSpeed = Config.SPRINT_SPEED * Config.BURST_SPEED_MULT
+    local speedRatio = state.currentSpeed / maxSpeed
     speedFill.Size = UDim2.new(math.min(1, speedRatio), 0, 1, 0)
     speedLabel.Text = string.format("%.0f", state.currentSpeed)
 
-    -- Speed color (blue to cyan when sprinting)
-    if state.isSprinting and state.currentSpeed > Config.BASE_SPEED then
+    -- Speed color (blue -> cyan when sprinting -> orange when bursting)
+    if state.isBursting then
+        speedFill.BackgroundColor3 = Color3.fromRGB(255, 140, 50)
+    elseif state.isSprinting and state.currentSpeed > Config.BASE_SPEED then
         speedFill.BackgroundColor3 = Color3.fromRGB(50, 200, 220)
     else
         speedFill.BackgroundColor3 = Color3.fromRGB(80, 150, 220)
@@ -483,9 +576,16 @@ local function updateUI()
 
     -- Status text
     local status = {}
-    if state.isSprinting then table.insert(status, "SPRINT") end
+    if state.isBursting then
+        table.insert(status, "BURST")
+    elseif state.isSprinting then
+        table.insert(status, "SPRINT")
+    end
     if state.isDrifting then table.insert(status, "DRIFT") end
     if not state.isGrounded then table.insert(status, "AIR") end
+    if state.burstCooldown > 0 and not state.isBursting then
+        table.insert(status, string.format("CD:%.1f", state.burstCooldown))
+    end
     statusLabel.Text = table.concat(status, " | ")
 end
 
@@ -509,6 +609,7 @@ end)
 RunService.RenderStepped:Connect(function(dt)
     if not state.humanoid then return end
 
+    updateBurst(dt)
     updateStamina(dt)
     updateMovement(dt)
     handleJump()
