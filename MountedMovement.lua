@@ -953,21 +953,40 @@ local function updateMovement(dt)
         end
     end
 
-    -- When grounded and moving, check if we need to follow terrain ramps
+    -- When grounded and moving, follow the ground surface (works for both parts and terrain)
     if state.isGrounded and state.verticalVelocity <= 0 and horizontalMovement.Magnitude > 0.001 then
         local targetX = currentPos.X + movement.X
         local targetZ = currentPos.Z + movement.Z
-        local terrainY = getTerrainHeightAt(targetX, targetZ, currentPos.Y)
 
-        -- Only snap to terrain if terrain is close to our current height (we're actually on terrain)
-        -- This prevents snapping when on regular parts above terrain
-        if terrainY and math.abs(terrainY - currentPos.Y) < 6 then
-            -- Horse center should be above terrain surface
-            local targetY = terrainY + 3
+        -- Raycast downward from target position to find ground surface
+        local rayParams = RaycastParams.new()
+        rayParams.FilterDescendantsInstances = {horse, state.character}
+        rayParams.FilterType = Enum.RaycastFilterType.Exclude
+        rayParams.RespectCanCollide = true
+
+        -- Cast from above to find the ground at target position
+        local rayStart = Vector3.new(targetX, currentPos.Y + 5, targetZ)
+        local rayDir = Vector3.new(0, -15, 0)
+        local groundHit = workspace:Raycast(rayStart, rayDir, rayParams)
+
+        if groundHit then
+            -- Found ground (part-based ramp, floor, etc.)
+            local targetY = groundHit.Position.Y + 3  -- Horse height above surface
             local heightDelta = targetY - currentPos.Y
-            -- Only adjust upward for ramps, or slightly downward for descending
-            if heightDelta > 0 or heightDelta > -2 then
-                verticalMovement = math.clamp(heightDelta, -2 * dt * 60, 4 * dt * 60)
+
+            -- Check if this is a walkable slope
+            local slopeAngle = math.deg(math.acos(groundHit.Normal.Y))
+            if slopeAngle <= MAX_WALKABLE_SLOPE then
+                -- Smoothly follow the ground surface
+                verticalMovement = heightDelta * math.min(1, dt * 10)
+            end
+        else
+            -- No part hit, check terrain
+            local terrainY = getTerrainHeightAt(targetX, targetZ, currentPos.Y)
+            if terrainY and math.abs(terrainY - currentPos.Y) < 8 then
+                local targetY = terrainY + 3
+                local heightDelta = targetY - currentPos.Y
+                verticalMovement = heightDelta * math.min(1, dt * 10)
             end
         end
     end
