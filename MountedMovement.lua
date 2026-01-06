@@ -1078,9 +1078,10 @@ local function mount(horse)
     state.riderWeld.Parent = horseBody
 
     -- Initialize facing angle from horse orientation
+    -- Add 180 degrees (pi) because some horse models face the opposite direction
     local _, y, _ = horseBody.CFrame:ToEulerAnglesYXZ()
-    state.facingAngle = y
-    state.cameraAngle = y
+    state.facingAngle = y + math.pi
+    state.cameraAngle = y + math.pi
 
     -- Reset mounted state
     state.currentSpeed = 0
