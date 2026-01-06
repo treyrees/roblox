@@ -23,23 +23,24 @@ local camera = workspace.CurrentCamera
 -- ============================================
 local Config = {
     -- Speed
-    BASE_SPEED = 28,           -- Walking speed
-    SPRINT_SPEED = 84,         -- Full gallop (3x base speed)
-    ACCELERATION = 2.5,        -- How fast you reach target speed (per second, multiplied)
-    DECELERATION = 4.0,        -- How fast you slow down when not pressing forward
+    BASE_SPEED = 40,           -- Walking speed
+    SPRINT_SPEED = 80,         -- Full gallop (2x base speed)
+    ACCELERATION = 1.2,        -- How fast you reach target speed (lower = more horse-like buildup)
+    DECELERATION = 3.0,        -- How fast you slow down when not pressing forward
     EMPTY_STAMINA_PENALTY = 0.7, -- Speed multiplier when stamina bottoms out
-    
+
     -- Stamina
     MAX_STAMINA = 100,
     SPRINT_DRAIN = 15,         -- Per second while sprinting
     JUMP_COST = 20,            -- Flat cost per jump
-    REGEN_RATE = 12,           -- Per second when not sprinting
+    REGEN_MIN_RATE = 8,        -- Regen per second when stamina is low
+    REGEN_MAX_RATE = 25,       -- Regen per second when stamina is high (satisfying to top off)
     REGEN_DELAY = 0.5,         -- Seconds before regen starts
     EMPTY_PENALTY_DURATION = 2, -- Seconds of penalty when emptied
-    
+
     -- Turning (degrees per second for frame-rate independence)
     BASE_TURN_RATE = 480,      -- Degrees per second at low speed
-    MIN_TURN_RATE = 150,       -- Degrees per second at max speed
+    MIN_TURN_RATE = 100,       -- Degrees per second at max speed (harder to turn when fast)
     DRIFT_TURN_BONUS = 2.0,    -- Multiplier to turn rate while drifting
     DRIFT_SPEED_RETAIN = 0.85, -- Speed retention while drifting (vs braking)
     DRIFT_STAMINA_DRAIN = 8,   -- Additional stamina drain per second while drifting
@@ -53,11 +54,12 @@ local Config = {
     MOMENTUM_FACTOR = 0.92,    -- How much velocity carries frame-to-frame (0.9-0.99)
 
     -- Burst (double-tap sprint)
-    BURST_SPEED_MULT = 1.4,    -- Speed multiplier during burst (1.4x sprint = 4.2x base)
+    BURST_SPEED_MULT = 1.4,    -- Speed multiplier during burst (1.4x sprint)
     BURST_DURATION = 1.5,      -- How long burst lasts (seconds)
     BURST_COST = 25,           -- Stamina cost to trigger burst
     BURST_COOLDOWN = 3.0,      -- Seconds before burst can be used again
     BURST_TAP_WINDOW = 0.3,    -- Seconds to double-tap for burst
+    BURST_TURN_PENALTY = 0.4,  -- Turn rate multiplier during burst (commit factor - hard to steer)
 
     -- Body Tilt
     MAX_TILT_ANGLE = 15,       -- Maximum lean angle in degrees
@@ -248,13 +250,16 @@ local function updateStamina(dt)
         state.penaltyTimer = state.penaltyTimer - dt
     end
     
-    -- Regeneration
+    -- Regeneration (faster as stamina fills - satisfying to top off)
     if draining then
         state.regenTimer = Config.REGEN_DELAY
     else
         state.regenTimer = math.max(0, state.regenTimer - dt)
         if state.regenTimer <= 0 and state.penaltyTimer <= 0 then
-            state.stamina = math.min(Config.MAX_STAMINA, state.stamina + (Config.REGEN_RATE * dt))
+            -- Progressive regen: slower when empty, faster when nearly full
+            local staminaRatio = state.stamina / Config.MAX_STAMINA
+            local regenRate = Config.REGEN_MIN_RATE + (staminaRatio * (Config.REGEN_MAX_RATE - Config.REGEN_MIN_RATE))
+            state.stamina = math.min(Config.MAX_STAMINA, state.stamina + (regenRate * dt))
         end
     end
 end
@@ -297,8 +302,13 @@ local function calculateTurnRate(dt)
     local speedRatio = state.currentSpeed / Config.SPRINT_SPEED
     local turnRate = Config.BASE_TURN_RATE - (speedRatio * (Config.BASE_TURN_RATE - Config.MIN_TURN_RATE))
 
-    -- Drift bonus
-    if state.isDrifting and state.isSprinting and state.isGrounded then
+    -- Burst penalty (commit factor - you're locked into your direction)
+    if state.isBursting then
+        turnRate = turnRate * Config.BURST_TURN_PENALTY
+    end
+
+    -- Drift bonus (only when not bursting)
+    if state.isDrifting and state.isSprinting and state.isGrounded and not state.isBursting then
         turnRate = turnRate * Config.DRIFT_TURN_BONUS
     end
 
@@ -395,8 +405,8 @@ local function updateMovement(dt)
     -- Calculate body tilt based on turn rate and speed
     local speedRatio = math.clamp(state.currentSpeed / Config.SPRINT_SPEED, 0, 1)
     local maxTiltRad = math.rad(Config.MAX_TILT_ANGLE)
-    -- Tilt is proportional to turn rate and speed (faster = more tilt when turning)
-    local targetTilt = -state.turnRate * speedRatio * 0.3  -- Negative because leaning into turn
+    -- Tilt is proportional to turn rate and speed (leaning outward from turn - centrifugal feel)
+    local targetTilt = state.turnRate * speedRatio * 0.3
     targetTilt = math.clamp(targetTilt, -maxTiltRad, maxTiltRad)
 
     -- Smooth tilt transition
@@ -405,7 +415,7 @@ local function updateMovement(dt)
 
     -- Rotate character to face movement direction with tilt
     if state.currentSpeed > 1 then
-        -- Apply yaw (Y) and roll (Z) for leaning into turns
+        -- Apply yaw (Y) and roll (Z) for leaning outward on turns
         state.rootPart.CFrame = CFrame.new(state.rootPart.Position)
             * CFrame.Angles(0, state.facingAngle, 0)
             * CFrame.Angles(0, 0, state.currentTilt)
