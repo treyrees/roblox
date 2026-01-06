@@ -98,3 +98,12 @@ Your MVP is really just:
 5. One person to chase (rival)
 
 Everything else is retention optimization on top of a working core. Get those 5 things right and you can ship.
+
+---
+
+### 🔧 Technical TODOs
+
+**Character Selection System**
+- [ ] Add accessory support (hats, etc.) to character costumes
+- [ ] Startup character selection UI (before first spawn)
+- [ ] Ensure startup UI and in-game character change UI work identically
