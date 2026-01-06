@@ -211,6 +211,24 @@ end
 
 -- Clone clothing and accessories from template to character
 local function applyAppearance(template, character)
+    local humanoid = character:FindFirstChildOfClass("Humanoid")
+    if not humanoid then
+        warn("[CharacterSelection] No humanoid found in character")
+        return
+    end
+
+    -- Wait for humanoid to be ready
+    if not humanoid:IsDescendantOf(workspace) then
+        humanoid.AncestryChanged:Wait()
+    end
+
+    -- Remove ALL existing accessories first
+    for _, item in pairs(character:GetChildren()) do
+        if item:IsA("Accessory") then
+            item:Destroy()
+        end
+    end
+
     -- Clone Shirt
     local templateShirt = template:FindFirstChildOfClass("Shirt")
     if templateShirt then
@@ -243,48 +261,21 @@ local function applyAppearance(template, character)
         newTShirt.Parent = character
     end
 
-    -- Clone BodyColors
-    local templateColors = template:FindFirstChild("Body Colors") or template:FindFirstChildOfClass("BodyColors")
-    if templateColors then
-        local existingColors = character:FindFirstChild("Body Colors") or character:FindFirstChildOfClass("BodyColors")
-        if existingColors then existingColors:Destroy() end
+    -- NOTE: We keep the player's original BodyColors and face
+    -- This way the player is "dressing up" in the character's outfit
+    -- rather than completely replacing their appearance
 
-        local newColors = templateColors:Clone()
-        newColors.Parent = character
-    end
-
-    -- Clone Accessories
+    -- Clone Accessories (do this last, after removing old ones)
+    local accessoryCount = 0
     for _, item in pairs(template:GetChildren()) do
         if item:IsA("Accessory") then
-            -- Remove existing accessory of same name
-            local existing = character:FindFirstChild(item.Name)
-            if existing and existing:IsA("Accessory") then
-                existing:Destroy()
-            end
-
             local newAccessory = item:Clone()
-            local humanoid = character:FindFirstChildOfClass("Humanoid")
-            if humanoid then
-                humanoid:AddAccessory(newAccessory)
-            else
-                newAccessory.Parent = character
-            end
+            humanoid:AddAccessory(newAccessory)
+            accessoryCount = accessoryCount + 1
+            print("[CharacterSelection] Applied Accessory:", item.Name)
         end
     end
-
-    -- Copy face
-    local templateHead = template:FindFirstChild("Head")
-    local characterHead = character:FindFirstChild("Head")
-    if templateHead and characterHead then
-        local templateFace = templateHead:FindFirstChild("face") or templateHead:FindFirstChildOfClass("Decal")
-        if templateFace then
-            local existingFace = characterHead:FindFirstChild("face") or characterHead:FindFirstChildOfClass("Decal")
-            if existingFace then existingFace:Destroy() end
-
-            local newFace = templateFace:Clone()
-            newFace.Parent = characterHead
-        end
-    end
+    print("[CharacterSelection] Applied", accessoryCount, "accessories")
 end
 
 -- Spawn player as selected character
