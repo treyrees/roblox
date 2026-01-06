@@ -65,110 +65,189 @@ When designing new characters, consider these archetypes:
 
 ---
 
-## MVP vs Reach Goals
+## Development Roadmap
 
-### ✅ MVP — Ship With These
+### MVP — Launch Requirements
 
-These are essential to prevent immediate churn and prove the core loop works.
+These features are essential to prevent immediate churn and prove the core loop works.
 
-**Skill Ceiling**
-| Feature | Why MVP |
-|---------|---------|
-| Relative leaderboards ("Players near you") | Without this, new players see impossible times and quit Day 1. Trivial to implement — just filter the query. |
-| Percentile display | One number that makes rank 4,847 feel like an achievement ("Top 28%!"). Cheap dopamine. |
-| Personal improvement framing | "You're 1.4s faster than your first run" — requires storing first run time, which you're already doing. |
-| Milestone times (bronze/silver/gold) | Set 3 static target times per track. New players need achievable goals before they care about leaderboards. |
+#### Core Racing (Must Ship)
 
-**Content Treadmill**
-| Feature | Why MVP |
-|---------|---------|
-| Nothing | The 3-day leg structure IS your MVP content solution. One track for 3 days is fine at launch — players are still learning. This becomes a problem at Week 4+, not Week 1. |
+- [ ] Race mechanics work (movement, stamina, abilities)
+- [ ] Ghost recording during races
+- [ ] Ghost playback (8-12 simultaneous ghosts)
+- [ ] Leaderboard storage and retrieval
+- [ ] 3-day leg structure with scoring (80% best time, 20% consistency, PB bonus)
 
-**Social Stickiness**
-| Feature | Why MVP |
-|---------|---------|
-| Rival system (auto-assigned) | Low effort, high impact. Pick someone 0.5-2s faster, show their ghost, notify when they beat you. Creates pseudo-relationship with zero social coordination. |
-| Friend leaderboard | Roblox already has friends list. Just filter leaderboard to friends. Players will invite friends to compete. |
+#### Skill Ceiling Mitigation (Must Ship)
 
-**MVP Summary:** 6 features, all low-medium effort, directly address "why would I keep playing?"
+- [ ] **Relative leaderboards** — Default view shows "Players near you" not global top 10
+- [ ] **Percentile display** — Show "Top 28%" instead of "Rank 4,847"
+- [ ] **Personal improvement framing** — Display "You're 1.4s faster than your first run"
+- [ ] **Milestone times** — Bronze/silver/gold target times per track that anyone can achieve
 
----
+#### Social Foundation (Must Ship)
 
-### 🎯 Post-Launch Priority — Build These Next
-
-These deepen engagement once you've validated the core loop.
-
-| Feature | Why Post-Launch | When to Add |
-|---------|-----------------|-------------|
-| Skill brackets (Bronze/Silver/Gold/Diamond) | Requires tuning bracket thresholds based on real player data. You won't know where to draw lines until you see the distribution. | After 2-3 legs of data |
-| Crews/Teams | High-impact social feature but needs UI, crew management, crew leaderboards. Scope creep risk. | Month 2 |
-| Head-to-head challenges | Depends on having friends already playing. Crews create the friend density first. | After crews |
-| Daily challenges | Nice variety but not critical. Players are still learning the base game. | Month 2 |
-| Character rotation incentives | Requires having multiple balanced characters first. | When you have 4+ characters |
+- [ ] **Auto-rival system** — Assign player someone 0.5-2s faster, show their ghost, notify on overtake
+- [ ] **Friend leaderboard** — Filter leaderboard to Roblox friends list
 
 ---
 
-### 🌟 Reach Goals — Nice to Have
+### Post-Launch Phase 1 (Month 2)
 
-These are polish, not survival. Build them when the game is healthy.
+Build these after validating core loop with real player data.
 
-| Feature | Why Reach | Notes |
-|---------|-----------|-------|
-| Track weather variants (Day 2 rain, etc.) | Cool but requires art/VFX work. Doesn't solve a retention crisis, just adds flavor. | Consider for Season 2 |
-| Spectate + react | High effort (live sync or replay system + reaction UI). Fun but not critical. | 3-6 months out |
-| Clip sharing | Requires video capture, encoding, export pipeline. Players will screen record anyway. | When you have content creator traction |
-| Community spotlight / Ghost of the Day | Requires curation workflow (manual or algorithmic). Adds operational burden. | When you have community managers |
-| Parallel casual track | Splits the playerbase. Only matters when you have enough players that splitting is fine. | When DAU > 5k consistently |
-| Track evolution within leg (shortcuts open Day 3) | Cool concept but adds level design complexity for every track. | Experiment with one track first |
+#### Competitive Depth
+
+- [ ] **Skill brackets** — Bronze/Silver/Gold/Diamond tiers with separate leaderboards
+  - Requires: 2-3 legs of data to determine bracket thresholds
+- [ ] **Bracket promotion/relegation** — Move between tiers based on performance
+
+#### Social Expansion
+
+- [ ] **Crews/Teams** — Groups of 5-20 players
+  - Crew leaderboard (sum of top 5 members' scores)
+  - Crew chat
+  - Crew cosmetics/identity
+- [ ] **Daily challenges** — Side objectives for variety
+  - "Beat track without using ability"
+  - "Get 3 clean laps in a row"
+  - "Find hidden collectible"
 
 ---
 
-### Visual Summary
+### Post-Launch Phase 2 (Month 3+)
 
+Deepen engagement systems.
+
+#### Social Features
+
+- [ ] **Head-to-head challenges** — Challenge friends directly, async duel format
+- [ ] **Challenge notifications** — Alert when someone beats your challenged time
+
+#### Content Variety
+
+- [ ] **Character rotation incentives** — Bonus for using "featured character of the day"
+  - Requires: 4+ balanced characters
+- [ ] **Track weather variants** — Day 2 rain/night/fog variants
+  - Same layout, different feel
+  - Extends track mastery curve
+
+---
+
+### Reach Goals (3-6+ Months)
+
+Polish features for a healthy, growing game.
+
+#### Spectator/Content
+
+- [ ] **Spectate + react** — Watch friends' runs, react with emotes
+- [ ] **Clip sharing** — One-button save, auto-generate shareable highlight
+- [ ] **Community spotlight** — "Ghost of the Day" featuring mid-tier players
+
+#### Scale Features
+
+- [ ] **Parallel casual track** — Unranked track that rotates daily
+  - Only when DAU > 5k (splitting playerbase is okay)
+- [ ] **Track evolution within leg** — Shortcuts open on Day 3, obstacles move
+  - High level design complexity per track
+
+---
+
+### Backlog
+
+- [ ] Add accessory support (requires character specific config)
+- [ ] Character select polish
+
+---
+
+## Implementation Notes
+
+### Ghost Data Structure
+
+```lua
+GhostRun = {
+    player_id = "string",
+    character_id = "string",
+    total_time = 0.0,
+    recorded_at = timestamp,
+    path = {
+        { time = 0.0, position = Vector3, rotation = Vector3, anim = "string" },
+        -- recorded every ~100ms
+    }
+}
 ```
-LAUNCH (MVP)
-├── Relative leaderboards
-├── Percentile display
-├── Personal improvement messaging
-├── Milestone times (bronze/silver/gold)
-├── Auto-rival system
-└── Friend leaderboard
 
-MONTH 2
-├── Skill brackets
-├── Crews/Teams
-└── Daily challenges
+### Rival Assignment Logic
 
-MONTH 3+
-├── Head-to-head challenges
-├── Character rotation incentives
-└── Track variants
+```lua
+-- Find rival: someone 0.5-2s faster than player's best time
+function assignRival(playerBestTime, leaderboard)
+    local candidates = {}
+    for _, entry in ipairs(leaderboard) do
+        local delta = playerBestTime - entry.time
+        if delta >= 0.5 and delta <= 2.0 then
+            table.insert(candidates, entry)
+        end
+    end
+    if #candidates > 0 then
+        return candidates[math.random(#candidates)]
+    end
+    return nil
+end
+```
 
-SOMEDAY
-├── Spectate + react
-├── Clip sharing
-├── Community spotlight
-└── Parallel casual track
+### Percentile Calculation
+
+```lua
+function calculatePercentile(playerRank, totalPlayers)
+    return math.floor((1 - (playerRank / totalPlayers)) * 100)
+end
+-- Rank 100 out of 1000 = Top 90%
+-- Rank 500 out of 1000 = Top 50%
+```
+
+### Milestone Times (Per Track)
+
+```lua
+-- Set during track design, tuned after playtesting
+TrackMilestones = {
+    ["san_diego_desert"] = {
+        bronze = 180.0,  -- 3:00 - almost anyone can hit this
+        silver = 150.0,  -- 2:30 - requires learning the track
+        gold = 130.0,    -- 2:10 - requires optimization
+    }
+}
 ```
 
 ---
 
-### The Hard Truth
+## Success Metrics
 
-Your MVP is really just:
-1. The race works
-2. Ghosts play back
-3. Leaderboard exists
-4. Players see progress (not just rank)
-5. One person to chase (rival)
+### MVP Launch (Week 1-2)
 
-Everything else is retention optimization on top of a working core. Get those 5 things right and you can ship.
+- Players complete at least one full leg (3 days)
+- Day 3 retention > Day 1 (players return to finish leg)
+- Players beat at least bronze milestone time
+
+### Month 2
+
+- Crew formation rate > 20% of active players
+- Players have active rival relationship
+- Skill bracket distribution is roughly even (not everyone in Bronze)
+
+### Month 3+
+
+- DAU stable or growing
+- Content creators making clips
+- Friend referral rate increasing
 
 ---
 
-### 🔧 Technical TODOs
+## Anti-Patterns to Avoid
 
-**Character Selection System**
-- [ ] Add accessory support (hats, etc.) to character costumes
-- [ ] Startup character selection UI (before first spawn)
-- [ ] Ensure startup UI and in-game character change UI work identically
+1. **Don't show global leaderboard by default** — Demoralizing for new players
+2. **Don't require all 3 days for rewards** — Punishes people with schedules
+3. **Don't let one god run win everything** — Consistency scoring prevents this
+4. **Don't split playerbase too early** — Casual track waits until DAU is high
+5. **Don't over-scope crews** — Start simple: leaderboard + chat, add features later
