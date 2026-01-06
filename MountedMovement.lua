@@ -716,7 +716,7 @@ end
 local MAX_WALKABLE_SLOPE = 50
 
 -- Get the terrain height at a given X, Z position by sampling voxels
--- Returns the Y position of the highest solid terrain, or nil if no terrain
+-- Returns the Y position of the TOP of the highest solid terrain, or nil if no terrain
 local function getTerrainHeightAt(x, z, searchFromY)
     local terrain = workspace.Terrain
     if not terrain then return nil end
@@ -739,9 +739,10 @@ local function getTerrainHeightAt(x, z, searchFromY)
                 local material = materials[xi][yi][zi]
                 local occupancy = occupancies[xi][yi][zi]
                 if material ~= Enum.Material.Air and material ~= Enum.Material.Water and occupancy > 0.3 then
-                    local voxelY = regionStart.Y + (yi - 0.5) * 4
-                    if not highestY or voxelY > highestY then
-                        highestY = voxelY
+                    -- Calculate TOP of the voxel (center + half voxel size)
+                    local voxelTop = regionStart.Y + (yi * 4)
+                    if not highestY or voxelTop > highestY then
+                        highestY = voxelTop
                     end
                 end
             end
@@ -952,17 +953,22 @@ local function updateMovement(dt)
         end
     end
 
-    -- When grounded, snap to terrain surface for smooth ramp walking
-    if state.isGrounded and state.verticalVelocity <= 0 then
+    -- When grounded and moving, check if we need to follow terrain ramps
+    if state.isGrounded and state.verticalVelocity <= 0 and horizontalMovement.Magnitude > 0.001 then
         local targetX = currentPos.X + movement.X
         local targetZ = currentPos.Z + movement.Z
         local terrainY = getTerrainHeightAt(targetX, targetZ, currentPos.Y)
-        if terrainY then
-            -- Smoothly adjust to terrain height
-            local targetY = terrainY + 2  -- Keep horse above terrain
+
+        -- Only snap to terrain if terrain is close to our current height (we're actually on terrain)
+        -- This prevents snapping when on regular parts above terrain
+        if terrainY and math.abs(terrainY - currentPos.Y) < 6 then
+            -- Horse center should be above terrain surface
+            local targetY = terrainY + 3
             local heightDelta = targetY - currentPos.Y
-            -- Clamp the adjustment to avoid sudden jumps
-            verticalMovement = math.clamp(heightDelta, -4 * dt * 60, 4 * dt * 60)
+            -- Only adjust upward for ramps, or slightly downward for descending
+            if heightDelta > 0 or heightDelta > -2 then
+                verticalMovement = math.clamp(heightDelta, -2 * dt * 60, 4 * dt * 60)
+            end
         end
     end
 
@@ -996,10 +1002,10 @@ local function updateMovement(dt)
                             local material = materials[x][y][z]
                             local occupancy = occupancies[x][y][z]
                             if material ~= Enum.Material.Air and material ~= Enum.Material.Water and occupancy > 0.5 then
-                                -- Calculate the Y position of this voxel
-                                local voxelY = regionStart.Y + (y - 0.5) * 4
-                                if not terrainLandingY or voxelY > terrainLandingY then
-                                    terrainLandingY = voxelY
+                                -- Calculate the TOP of this voxel
+                                local voxelTop = regionStart.Y + (y * 4)
+                                if not terrainLandingY or voxelTop > terrainLandingY then
+                                    terrainLandingY = voxelTop
                                 end
                             end
                         end
@@ -1009,13 +1015,13 @@ local function updateMovement(dt)
         end
 
         if result then
-            verticalMovement = result.Position.Y - currentPos.Y + 2 -- Keep horse above ground
+            verticalMovement = result.Position.Y - currentPos.Y + 3 -- Keep horse above ground
             state.verticalVelocity = 0
             state.isGrounded = true
             state.canDoubleJump = false
             state.doubleJumpTurnTimer = 0
         elseif terrainLandingY then
-            verticalMovement = terrainLandingY - currentPos.Y + 2 -- Keep horse above terrain
+            verticalMovement = terrainLandingY - currentPos.Y + 3 -- Keep horse above terrain
             state.verticalVelocity = 0
             state.isGrounded = true
             state.canDoubleJump = false
