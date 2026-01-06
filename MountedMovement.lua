@@ -1,23 +1,31 @@
 --[[
     MountedMovement.lua
     Horse-mounted racing movement with burst, body tilt, and double jump
+    Only activates when player mounts a horse - default Roblox movement otherwise
 
-    Controls (Tank Style):
+    Controls (Tank Style - While Mounted):
     - W/S: Move forward/backward
     - A/D: Turn left/right
     - Shift: Sprint (hold, forward only)
     - Shift (double-tap): Burst (speed boost, costs stamina)
     - Space: Jump (press again in air for double jump with enhanced turning)
     - Q: Drift (hold to lock momentum, turn to aim, release for sharp turn)
+    - X: Dismount
 ]]
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local ContextActionService = game:GetService("ContextActionService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local player = Players.LocalPlayer
 local camera = workspace.CurrentCamera
+
+-- Wait for mount events from server
+local MountEvents = ReplicatedStorage:WaitForChild("MountEvents")
+local MountHorse = MountEvents:WaitForChild("MountHorse")
+local DismountHorse = MountEvents:WaitForChild("DismountHorse")
 
 -- ============================================
 -- TUNING VALUES (tweak these)
@@ -45,7 +53,7 @@ local Config = {
     DRIFT_TURN_BONUS = 2.0,    -- Multiplier to turn rate while drifting (for aiming)
     DRIFT_RELEASE_RETAIN = 0.92, -- Speed retained when releasing drift (sharp turn)
     DRIFT_STAMINA_DRAIN = 8,   -- Additional stamina drain per second while drifting
-    
+
     -- Jumping
     JUMP_POWER = 66,           -- Base jump power (increased 20%)
     DOUBLE_JUMP_POWER = 55,    -- Second jump power (slightly less)
@@ -54,7 +62,7 @@ local Config = {
     DOUBLE_JUMP_TURN_RATE = 120, -- Degrees per second after double jump (enables repositioning)
     DOUBLE_JUMP_TURN_DURATION = 0.8, -- How long enhanced air turning lasts
     AIR_CONTROL = 0.15,        -- How much you can influence air velocity (0-1)
-    
+
     -- Feel
     MOMENTUM_FACTOR = 0.92,    -- How much velocity carries frame-to-frame (0.9-0.99)
 
@@ -80,6 +88,16 @@ local Config = {
 -- STATE
 -- ============================================
 local state = {
+    -- Mount state
+    isMounted = false,
+    currentHorse = nil,
+
+    -- Default humanoid settings (stored on mount)
+    defaultWalkSpeed = 16,
+    defaultJumpPower = 50,
+    defaultJumpHeight = 7.2,
+    defaultAutoJump = true,
+
     -- Input
     moveInput = 0,             -- Forward/back input (-1 to 1)
     turnInput = 0,             -- Turn input (-1 = left, 1 = right)
@@ -91,13 +109,13 @@ local state = {
     wasDrifting = false,           -- Track previous frame's drift state (for release detection)
     driftVelocityDir = Vector3.zero, -- Locked velocity direction while drifting
     driftSpeed = 0,                -- Speed when drift started
-    
+
     -- Physics
     currentSpeed = 0,
     facingAngle = 0,           -- Radians, world Y rotation
     velocity = Vector3.zero,
     isGrounded = true,
-    
+
     -- Stamina
     stamina = Config.MAX_STAMINA,
     regenTimer = 0,
@@ -127,6 +145,14 @@ local state = {
     rootPart = nil,
 }
 
+-- UI references (created later, only shown when mounted)
+local screenGui = nil
+local uiContainer = nil
+local staminaFill = nil
+local speedFill = nil
+local speedLabel = nil
+local statusLabel = nil
+
 -- ============================================
 -- INPUT HANDLING
 -- ============================================
@@ -145,9 +171,9 @@ local function tryTriggerBurst()
     return true
 end
 
-local function bindInputs()
+local function bindMountedInputs()
     -- Sprint (with double-tap burst detection)
-    ContextActionService:BindAction("Sprint", function(_, inputState)
+    ContextActionService:BindAction("MountedSprint", function(_, inputState)
         if inputState == Enum.UserInputState.Begin then
             local now = tick()
             -- Check for double-tap
@@ -163,7 +189,7 @@ local function bindInputs()
     end, false, Enum.KeyCode.LeftShift)
 
     -- Drift (explicit Begin/End handling for reliability)
-    ContextActionService:BindAction("Drift", function(_, inputState)
+    ContextActionService:BindAction("MountedDrift", function(_, inputState)
         if inputState == Enum.UserInputState.Begin then
             state.isDrifting = true
         elseif inputState == Enum.UserInputState.End then
@@ -171,20 +197,29 @@ local function bindInputs()
         end
         return Enum.ContextActionResult.Pass
     end, false, Enum.KeyCode.Q)
-    
+
     -- Jump
-    ContextActionService:BindAction("Jump", function(_, inputState)
+    ContextActionService:BindAction("MountedJump", function(_, inputState)
         if inputState == Enum.UserInputState.Begin then
             state.jumpRequested = true
         end
         return Enum.ContextActionResult.Pass
     end, false, Enum.KeyCode.Space)
+
+    -- Dismount
+    ContextActionService:BindAction("Dismount", function(_, inputState)
+        if inputState == Enum.UserInputState.Begin then
+            dismount()
+        end
+        return Enum.ContextActionResult.Sink
+    end, false, Enum.KeyCode.X)
 end
 
-local function unbindInputs()
-    ContextActionService:UnbindAction("Sprint")
-    ContextActionService:UnbindAction("Drift")
-    ContextActionService:UnbindAction("Jump")
+local function unbindMountedInputs()
+    ContextActionService:UnbindAction("MountedSprint")
+    ContextActionService:UnbindAction("MountedDrift")
+    ContextActionService:UnbindAction("MountedJump")
+    ContextActionService:UnbindAction("Dismount")
     -- Reset input state
     state.isSprinting = false
     state.isDrifting = false
@@ -250,7 +285,7 @@ local function updateStamina(dt)
         state.stamina = state.stamina - (Config.DRIFT_STAMINA_DRAIN * dt)
         draining = true
     end
-    
+
     -- Check for empty (only trigger penalty once when first hitting 0)
     if state.stamina <= 0 then
         if state.penaltyTimer <= 0 then
@@ -258,12 +293,12 @@ local function updateStamina(dt)
         end
         state.stamina = 0
     end
-    
+
     -- Penalty countdown
     if state.penaltyTimer > 0 then
         state.penaltyTimer = state.penaltyTimer - dt
     end
-    
+
     -- Regeneration (faster as stamina fills - satisfying to top off)
     if draining then
         state.regenTimer = Config.REGEN_DELAY
@@ -455,7 +490,7 @@ local function updateMovement(dt)
             state.velocity.Z + airInfluence.Z
         )
     end
-    
+
     -- Apply to humanoid - set WalkSpeed dynamically for actual speed changes
     state.humanoid.WalkSpeed = state.currentSpeed
     local moveDir = state.velocity.Unit
@@ -464,7 +499,7 @@ local function updateMovement(dt)
     else
         state.humanoid:Move(Vector3.zero, false)
     end
-    
+
     -- Calculate body tilt based on turn rate and speed
     local speedRatio = math.clamp(state.currentSpeed / Config.SPRINT_SPEED, 0, 1)
     local maxTiltRad = math.rad(Config.MAX_TILT_ANGLE)
@@ -535,48 +570,22 @@ local function handleJump()
 end
 
 -- ============================================
--- CHARACTER SETUP
--- ============================================
-local function setupCharacter(character)
-    state.character = character
-    state.humanoid = character:WaitForChild("Humanoid")
-    state.rootPart = character:WaitForChild("HumanoidRootPart")
-    
-    -- Configure humanoid for custom movement
-    state.humanoid.WalkSpeed = Config.BASE_SPEED
-    state.humanoid.JumpPower = 0  -- We control jumping manually
-    state.humanoid.JumpHeight = 0
-    state.humanoid.AutoJump = false  -- Disable auto-jump on mobile/obstacles
-    
-    -- Initialize facing angle from current orientation
-    local _, y, _ = state.rootPart.CFrame:ToEulerAnglesYXZ()
-    state.facingAngle = y
-    state.cameraAngle = y  -- Start camera behind horse
-
-    -- Reset state
-    state.currentSpeed = 0
-    state.stamina = Config.MAX_STAMINA
-    state.penaltyTimer = 0
-    state.regenTimer = 0
-    state.velocity = Vector3.zero
-end
-
--- ============================================
 -- UI (stamina and speed display)
 -- ============================================
 local function createUI()
-    local screenGui = Instance.new("ScreenGui")
+    screenGui = Instance.new("ScreenGui")
     screenGui.Name = "MountedMovementUI"
     screenGui.ResetOnSpawn = false
+    screenGui.Enabled = false  -- Hidden by default until mounted
     screenGui.Parent = player.PlayerGui
 
     -- Container for both bars
-    local container = Instance.new("Frame")
-    container.Name = "Container"
-    container.Size = UDim2.new(0, 200, 0, 50)
-    container.Position = UDim2.new(0.5, -100, 1, -70)
-    container.BackgroundTransparency = 1
-    container.Parent = screenGui
+    uiContainer = Instance.new("Frame")
+    uiContainer.Name = "Container"
+    uiContainer.Size = UDim2.new(0, 200, 0, 50)
+    uiContainer.Position = UDim2.new(0.5, -100, 1, -70)
+    uiContainer.BackgroundTransparency = 1
+    uiContainer.Parent = screenGui
 
     -- Speed bar (top)
     local speedFrame = Instance.new("Frame")
@@ -585,16 +594,16 @@ local function createUI()
     speedFrame.Position = UDim2.new(0, 0, 0, 0)
     speedFrame.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
     speedFrame.BorderSizePixel = 0
-    speedFrame.Parent = container
+    speedFrame.Parent = uiContainer
 
-    local speedFill = Instance.new("Frame")
+    speedFill = Instance.new("Frame")
     speedFill.Name = "Fill"
     speedFill.Size = UDim2.new(0, 0, 1, 0)
     speedFill.BackgroundColor3 = Color3.fromRGB(80, 150, 220)
     speedFill.BorderSizePixel = 0
     speedFill.Parent = speedFrame
 
-    local speedLabel = Instance.new("TextLabel")
+    speedLabel = Instance.new("TextLabel")
     speedLabel.Name = "Label"
     speedLabel.Size = UDim2.new(1, 0, 1, 0)
     speedLabel.BackgroundTransparency = 1
@@ -611,9 +620,9 @@ local function createUI()
     staminaFrame.Position = UDim2.new(0, 0, 0, 18)
     staminaFrame.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
     staminaFrame.BorderSizePixel = 0
-    staminaFrame.Parent = container
+    staminaFrame.Parent = uiContainer
 
-    local staminaFill = Instance.new("Frame")
+    staminaFill = Instance.new("Frame")
     staminaFill.Name = "Fill"
     staminaFill.Size = UDim2.new(1, 0, 1, 0)
     staminaFill.BackgroundColor3 = Color3.fromRGB(50, 200, 80)
@@ -628,7 +637,7 @@ local function createUI()
     end
 
     -- Status indicators (sprint/drift)
-    local statusLabel = Instance.new("TextLabel")
+    statusLabel = Instance.new("TextLabel")
     statusLabel.Name = "Status"
     statusLabel.Size = UDim2.new(1, 0, 0, 14)
     statusLabel.Position = UDim2.new(0, 0, 0, 40)
@@ -637,14 +646,24 @@ local function createUI()
     statusLabel.TextSize = 11
     statusLabel.Font = Enum.Font.Gotham
     statusLabel.Text = ""
-    statusLabel.Parent = container
+    statusLabel.Parent = uiContainer
 
-    return staminaFill, speedFill, speedLabel, statusLabel
+    -- Dismount hint (shown at top)
+    local dismountHint = Instance.new("TextLabel")
+    dismountHint.Name = "DismountHint"
+    dismountHint.Size = UDim2.new(1, 0, 0, 14)
+    dismountHint.Position = UDim2.new(0, 0, 0, -18)
+    dismountHint.BackgroundTransparency = 1
+    dismountHint.TextColor3 = Color3.fromRGB(150, 150, 150)
+    dismountHint.TextSize = 10
+    dismountHint.Font = Enum.Font.Gotham
+    dismountHint.Text = "[X] Dismount"
+    dismountHint.Parent = uiContainer
 end
 
-local staminaFill, speedFill, speedLabel, statusLabel = createUI()
-
 local function updateUI()
+    if not staminaFill then return end
+
     -- Stamina bar
     local staminaRatio = state.stamina / Config.MAX_STAMINA
     staminaFill.Size = UDim2.new(staminaRatio, 0, 1, 0)
@@ -728,28 +747,171 @@ local function updateCamera(dt)
 end
 
 -- ============================================
+-- MOUNT / DISMOUNT
+-- ============================================
+local function mount(horse)
+    if state.isMounted then return end
+    if not state.humanoid or not state.rootPart then return end
+
+    state.isMounted = true
+    state.currentHorse = horse
+
+    -- Store default humanoid settings
+    state.defaultWalkSpeed = state.humanoid.WalkSpeed
+    state.defaultJumpPower = state.humanoid.JumpPower
+    state.defaultJumpHeight = state.humanoid.JumpHeight
+    state.defaultAutoJump = state.humanoid.AutoJump
+
+    -- Configure humanoid for mounted movement
+    state.humanoid.WalkSpeed = Config.BASE_SPEED
+    state.humanoid.JumpPower = 0  -- We control jumping manually
+    state.humanoid.JumpHeight = 0
+    state.humanoid.AutoJump = false
+
+    -- Initialize facing angle from current orientation
+    local _, y, _ = state.rootPart.CFrame:ToEulerAnglesYXZ()
+    state.facingAngle = y
+    state.cameraAngle = y
+
+    -- Reset mounted state
+    state.currentSpeed = 0
+    state.stamina = Config.MAX_STAMINA
+    state.penaltyTimer = 0
+    state.regenTimer = 0
+    state.velocity = Vector3.zero
+    state.currentTilt = 0
+    state.isBursting = false
+    state.burstTimer = 0
+    state.burstCooldown = 0
+
+    -- Bind mounted controls
+    bindMountedInputs()
+
+    -- Set camera to Scriptable for manual control
+    camera.CameraType = Enum.CameraType.Scriptable
+
+    -- Show UI
+    if screenGui then
+        screenGui.Enabled = true
+    end
+
+    -- Hide the horse model (player becomes the "horse")
+    if horse and horse.PrimaryPart then
+        for _, part in ipairs(horse:GetDescendants()) do
+            if part:IsA("BasePart") then
+                part.Transparency = 1
+            end
+        end
+    end
+
+    print("[MountedMovement] Mounted horse")
+end
+
+function dismount()
+    if not state.isMounted then return end
+
+    state.isMounted = false
+
+    -- Restore default humanoid settings
+    if state.humanoid then
+        state.humanoid.WalkSpeed = state.defaultWalkSpeed
+        state.humanoid.JumpPower = state.defaultJumpPower
+        state.humanoid.JumpHeight = state.defaultJumpHeight
+        state.humanoid.AutoJump = state.defaultAutoJump
+    end
+
+    -- Reset character rotation to upright (remove tilt)
+    if state.rootPart then
+        local pos = state.rootPart.Position
+        state.rootPart.CFrame = CFrame.new(pos) * CFrame.Angles(0, state.facingAngle, 0)
+    end
+
+    -- Unbind mounted controls
+    unbindMountedInputs()
+
+    -- Restore default camera
+    camera.CameraType = Enum.CameraType.Custom
+
+    -- Hide UI
+    if screenGui then
+        screenGui.Enabled = false
+    end
+
+    -- Show the horse model again and move it to player position
+    local horse = state.currentHorse
+    if horse and horse.PrimaryPart then
+        -- Position horse where player is
+        local playerPos = state.rootPart and state.rootPart.Position or Vector3.new(0, 3, 0)
+        horse:PivotTo(CFrame.new(playerPos + Vector3.new(3, 0, 0)))  -- Offset slightly
+
+        for _, part in ipairs(horse:GetDescendants()) do
+            if part:IsA("BasePart") then
+                part.Transparency = 0
+            end
+        end
+    end
+
+    -- Notify server
+    DismountHorse:FireServer()
+
+    state.currentHorse = nil
+
+    print("[MountedMovement] Dismounted")
+end
+
+-- ============================================
+-- CHARACTER SETUP
+-- ============================================
+local function setupCharacter(character)
+    state.character = character
+    state.humanoid = character:WaitForChild("Humanoid")
+    state.rootPart = character:WaitForChild("HumanoidRootPart")
+
+    -- Character uses default Roblox movement until mounted
+    -- No modifications here - let Roblox handle it
+end
+
+local function cleanupCharacter()
+    -- If mounted when character is removed, clean up
+    if state.isMounted then
+        unbindMountedInputs()
+        camera.CameraType = Enum.CameraType.Custom
+        if screenGui then
+            screenGui.Enabled = false
+        end
+        state.isMounted = false
+        state.currentHorse = nil
+    end
+
+    state.character = nil
+    state.humanoid = nil
+    state.rootPart = nil
+end
+
+-- ============================================
 -- MAIN LOOP
 -- ============================================
-bindInputs()
 
--- Set camera to Scriptable for manual control
-camera.CameraType = Enum.CameraType.Scriptable
+-- Create UI (hidden by default)
+createUI()
 
+-- Setup character
 if player.Character then
     setupCharacter(player.Character)
 end
 
 player.CharacterAdded:Connect(setupCharacter)
-player.CharacterRemoving:Connect(function()
-    unbindInputs()
-    camera.CameraType = Enum.CameraType.Custom  -- Restore default camera
-    state.character = nil
-    state.humanoid = nil
-    state.rootPart = nil
+player.CharacterRemoving:Connect(cleanupCharacter)
+
+-- Listen for mount event from server
+MountHorse.OnClientEvent:Connect(function(horse)
+    mount(horse)
 end)
 
+-- Main update loop (only runs mounted logic when mounted)
 RunService.RenderStepped:Connect(function(dt)
     if not state.humanoid then return end
+    if not state.isMounted then return end  -- Skip all mounted logic when not mounted
 
     updateBurst(dt)
     updateStamina(dt)
