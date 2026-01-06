@@ -789,11 +789,10 @@ local function updateMovement(dt)
 
     local newPos = currentPos + Vector3.new(movement.X, verticalMovement, movement.Z)
 
-    -- Apply new CFrame to horse with tilt
-    -- Add pi to rotate horse model 180 degrees so head faces movement direction
+    -- Apply new CFrame to horse with tilt (negate tilt so right turn = lean right)
     local newCFrame = CFrame.new(newPos)
-        * CFrame.Angles(0, state.facingAngle + math.pi, 0)
-        * CFrame.Angles(0, 0, state.currentTilt)
+        * CFrame.Angles(0, state.facingAngle, 0)
+        * CFrame.Angles(0, 0, -state.currentTilt)
 
     horse:PivotTo(newCFrame)
 end
@@ -1008,10 +1007,11 @@ local function updateCamera(dt)
     state.cameraAngle = state.cameraAngle + angleDiff * smoothing
 
     local horsePos = horse.PrimaryPart.Position
+    -- Camera positioned behind the horse (opposite to movement direction)
     local behindOffset = Vector3.new(
-        math.sin(state.cameraAngle) * Config.CAMERA_DISTANCE,
+        -math.sin(state.cameraAngle) * Config.CAMERA_DISTANCE,
         Config.CAMERA_HEIGHT,
-        math.cos(state.cameraAngle) * Config.CAMERA_DISTANCE
+        -math.cos(state.cameraAngle) * Config.CAMERA_DISTANCE
     )
 
     local cameraPos = horsePos + behindOffset
@@ -1076,10 +1076,11 @@ local function mount(horse)
     local seatPosition = horseBody.Position + Vector3.new(0, Config.RIDER_HEIGHT_OFFSET, 0)
 
     -- Create weld to attach player to horse
+    -- Rotate rider 180° so they face forward (Roblox characters face -Z, horse faces +Z)
     state.riderWeld = Instance.new("Weld")
     state.riderWeld.Part0 = horseBody
     state.riderWeld.Part1 = state.rootPart
-    state.riderWeld.C0 = CFrame.new(0, Config.RIDER_HEIGHT_OFFSET, 0)
+    state.riderWeld.C0 = CFrame.new(0, Config.RIDER_HEIGHT_OFFSET, 0) * CFrame.Angles(0, math.pi, 0)
     state.riderWeld.C1 = CFrame.new()
     state.riderWeld.Parent = horseBody
 
