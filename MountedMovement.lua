@@ -317,19 +317,24 @@ end
 local function handleJump()
     if not state.jumpRequested then return end
     state.jumpRequested = false
-    
+
     if not state.isGrounded then return end
     if state.stamina < Config.JUMP_COST and state.penaltyTimer <= 0 then return end
-    
+
     -- Deduct stamina
     if state.penaltyTimer <= 0 then
         state.stamina = state.stamina - Config.JUMP_COST
     end
-    
-    -- Execute jump
-    if state.humanoid then
-        state.humanoid.JumpPower = Config.JUMP_POWER
-        state.humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+
+    -- Execute jump by applying direct velocity to root part
+    if state.rootPart then
+        -- Apply upward velocity directly for reliable jumping
+        state.rootPart.AssemblyLinearVelocity = Vector3.new(
+            state.rootPart.AssemblyLinearVelocity.X,
+            Config.JUMP_POWER,
+            state.rootPart.AssemblyLinearVelocity.Z
+        )
+        state.isGrounded = false
     end
 end
 
@@ -341,9 +346,11 @@ local function setupCharacter(character)
     state.humanoid = character:WaitForChild("Humanoid")
     state.rootPart = character:WaitForChild("HumanoidRootPart")
     
-    -- Disable default jump (we handle it)
-    state.humanoid.JumpPower = 0
+    -- Configure humanoid for custom movement
+    state.humanoid.WalkSpeed = Config.BASE_SPEED
+    state.humanoid.JumpPower = 0  -- We control jumping manually
     state.humanoid.JumpHeight = 0
+    state.humanoid.AutoJump = false  -- Disable auto-jump on mobile/obstacles
     
     -- Initialize facing angle from current orientation
     local _, y, _ = state.rootPart.CFrame:ToEulerAnglesYXZ()
