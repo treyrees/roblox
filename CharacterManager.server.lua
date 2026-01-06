@@ -158,7 +158,6 @@ local function applyCharacterModel(player, characterId)
 
     -- Weld ALL costume parts to player's HumanoidRootPart
     -- This ensures the entire costume moves as one unit with the player
-    local rootCFrame = costumeRoot.CFrame
     for _, part in ipairs(costumeModel:GetDescendants()) do
         if part:IsA("BasePart") then
             -- Remove any existing AccessoryWeld (for Accessory Handles)
@@ -171,9 +170,10 @@ local function applyCharacterModel(player, characterId)
             weld.Name = "CostumeWeld_" .. part.Name
             weld.Part0 = rootPart
             weld.Part1 = part
-            -- Maintain the part's position relative to the costume root
-            weld.C0 = CFrame.new(0, 0, 0)
-            weld.C1 = rootCFrame:ToObjectSpace(part.CFrame)
+            -- C0 = offset from rootPart to where part currently is
+            -- C1 = identity (part stays at its current relative position)
+            weld.C0 = rootPart.CFrame:ToObjectSpace(part.CFrame)
+            weld.C1 = CFrame.new(0, 0, 0)
             weld.Parent = part
         end
     end
