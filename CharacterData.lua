@@ -124,6 +124,7 @@ local CharacterData = {
         ability = "Phase Shift",
         abilityDescription = "Press F to blink forward, maintaining momentum",
         modelName = "HotPants",
+        enabled = false, -- No model yet
 
         portraitColor = Color3.fromRGB(200, 100, 150), -- Pink theme
 
@@ -160,6 +161,7 @@ local CharacterData = {
         ability = "Momentum",
         abilityDescription = "Running at normal speed gradually builds bonus speed",
         modelName = "Sandman",
+        enabled = false, -- No model yet
 
         portraitColor = Color3.fromRGB(180, 140, 100), -- Brown/earth theme
 
@@ -193,7 +195,8 @@ local CharacterData = {
 function CharacterData.getCharacterList()
     local list = {}
     for id, data in pairs(CharacterData) do
-        if type(data) == "table" and data.displayName then
+        -- Only include enabled characters (default to true if not specified)
+        if type(data) == "table" and data.displayName and (data.enabled ~= false) then
             table.insert(list, {
                 id = id,
                 displayName = data.displayName,
