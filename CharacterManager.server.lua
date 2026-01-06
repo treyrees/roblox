@@ -61,6 +61,17 @@ local function getCharacterModel(characterId)
     return model:Clone()
 end
 
+-- Map of body part names for welding costume parts to corresponding player parts
+local BODY_PART_NAMES = {
+    "Head", "Torso", "UpperTorso", "LowerTorso",
+    "Left Arm", "Right Arm", "Left Leg", "Right Leg",
+    "LeftUpperArm", "LeftLowerArm", "LeftHand",
+    "RightUpperArm", "RightLowerArm", "RightHand",
+    "LeftUpperLeg", "LeftLowerLeg", "LeftFoot",
+    "RightUpperLeg", "RightLowerLeg", "RightFoot",
+    "HumanoidRootPart"
+}
+
 local function applyCharacterModel(player, characterId)
     local character = player.Character
     if not character then return false end
@@ -90,12 +101,13 @@ local function applyCharacterModel(player, characterId)
         return true
     end
 
-    -- Hide the default avatar (but keep it functional)
+    -- Hide the default avatar body parts (but keep it functional for animations)
     for _, part in ipairs(character:GetDescendants()) do
         if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
             part.Transparency = 1
         end
-        if part:IsA("Accessory") or part:IsA("Shirt") or part:IsA("Pants") or part:IsA("BodyColors") then
+        -- Only destroy accessories and body colors, keep Shirt/Pants for fallback
+        if part:IsA("Accessory") or part:IsA("BodyColors") then
             part:Destroy()
         end
     end
@@ -109,8 +121,29 @@ local function applyCharacterModel(player, characterId)
         end
     end
 
+    -- Copy clothing from costume to player (if costume has clothing)
+    local costumeShirt = costumeModel:FindFirstChildOfClass("Shirt")
+    if costumeShirt then
+        local existingShirt = character:FindFirstChildOfClass("Shirt")
+        if existingShirt then existingShirt:Destroy() end
+        costumeShirt:Clone().Parent = character
+    end
+
+    local costumePants = costumeModel:FindFirstChildOfClass("Pants")
+    if costumePants then
+        local existingPants = character:FindFirstChildOfClass("Pants")
+        if existingPants then existingPants:Destroy() end
+        costumePants:Clone().Parent = character
+    end
+
     -- Prepare the costume model
     costumeModel.Name = "CostumeOverlay"
+
+    -- Remove the costume's humanoid (we don't need it)
+    local costumeHumanoid = costumeModel:FindFirstChildOfClass("Humanoid")
+    if costumeHumanoid then
+        costumeHumanoid:Destroy()
+    end
 
     -- Unanchor all parts and make them non-collidable
     for _, part in ipairs(costumeModel:GetDescendants()) do
@@ -121,60 +154,58 @@ local function applyCharacterModel(player, characterId)
         end
     end
 
-    -- Find the costume's root (Torso or HumanoidRootPart)
-    local costumeRoot = costumeModel:FindFirstChild("HumanoidRootPart")
-        or costumeModel:FindFirstChild("Torso")
-        or costumeModel.PrimaryPart
-
-    if not costumeRoot then
-        -- Just use the first part
-        for _, part in ipairs(costumeModel:GetDescendants()) do
-            if part:IsA("BasePart") then
-                costumeRoot = part
-                break
-            end
-        end
-    end
-
-    if not costumeRoot then
-        warn("[CharacterManager] Costume has no parts!")
-        return false
-    end
-
-    -- Remove the costume's humanoid (we don't need it)
-    local costumeHumanoid = costumeModel:FindFirstChildOfClass("Humanoid")
-    if costumeHumanoid then
-        costumeHumanoid:Destroy()
-    end
-
-    -- Set PrimaryPart for positioning
-    costumeModel.PrimaryPart = costumeRoot
-
-    -- Position costume at player's location before welding
-    costumeModel:PivotTo(rootPart.CFrame)
-
     -- Parent costume to character
     costumeModel.Parent = character
 
-    -- Weld ALL costume parts to player's HumanoidRootPart
-    -- This ensures the entire costume moves as one unit with the player
+    -- Weld costume parts to CORRESPONDING player body parts for animation support
+    -- This allows the costume to animate with the player's skeleton
+    local weldedParts = {}
+
+    for _, partName in ipairs(BODY_PART_NAMES) do
+        local playerPart = character:FindFirstChild(partName)
+        local costumePart = costumeModel:FindFirstChild(partName)
+
+        if playerPart and costumePart then
+            -- Remove any existing welds on this costume part
+            for _, child in ipairs(costumePart:GetChildren()) do
+                if child:IsA("Weld") or child:IsA("Motor6D") then
+                    child:Destroy()
+                end
+            end
+
+            local weld = Instance.new("Weld")
+            weld.Name = "CostumeWeld"
+            weld.Part0 = playerPart
+            weld.Part1 = costumePart
+            -- Rotate 180 degrees to fix backwards orientation
+            weld.C0 = CFrame.Angles(0, math.pi, 0)
+            weld.C1 = CFrame.new()
+            weld.Parent = costumePart
+
+            weldedParts[partName] = true
+        end
+    end
+
+    -- For any remaining costume parts not matched to body parts, weld to rootPart
     for _, part in ipairs(costumeModel:GetDescendants()) do
-        if part:IsA("BasePart") then
-            -- Remove any existing AccessoryWeld (for Accessory Handles)
+        if part:IsA("BasePart") and not weldedParts[part.Name] then
+            -- Remove any existing AccessoryWeld
             local existingWeld = part:FindFirstChild("AccessoryWeld")
             if existingWeld then
                 existingWeld:Destroy()
             end
 
-            local weld = Instance.new("Weld")
-            weld.Name = "CostumeWeld_" .. part.Name
-            weld.Part0 = rootPart
-            weld.Part1 = part
-            -- C0 = offset from rootPart to where part currently is
-            -- C1 = identity (part stays at its current relative position)
-            weld.C0 = rootPart.CFrame:ToObjectSpace(part.CFrame)
-            weld.C1 = CFrame.new(0, 0, 0)
-            weld.Parent = part
+            -- Only weld if not already welded
+            if not part:FindFirstChild("CostumeWeld") then
+                local weld = Instance.new("Weld")
+                weld.Name = "CostumeWeld_" .. part.Name
+                weld.Part0 = rootPart
+                weld.Part1 = part
+                -- Include 180 degree rotation for consistent orientation
+                weld.C0 = rootPart.CFrame:ToObjectSpace(part.CFrame) * CFrame.Angles(0, math.pi, 0)
+                weld.C1 = CFrame.new()
+                weld.Parent = part
+            end
         end
     end
 
