@@ -6,113 +6,136 @@
 
 local CharacterData = {
     -- Gyro Zeppeli - Precision Burst
-    -- Burst is stronger near max stamina + sharp turning during burst
+    -- The ONLY character who can break 100 speed. Rewards stamina discipline.
     Gyro = {
         displayName = "Gyro Zeppeli",
-        description = "Master of calculated aggression. Burst power scales with stamina management.",
+        description = "Master of calculated aggression. The only racer who can break the speed limit.",
         ability = "Precision Burst",
-        abilityDescription = "Burst is more powerful at high stamina and allows sharp turning",
-        modelName = "Gyro", -- Name of model in ReplicatedStorage/Characters
+        abilityDescription = "Burst power scales with stamina - above 85% BREAKS the 100 speed cap!",
+        modelName = "Gyro",
 
-        -- Portrait/UI
         portraitColor = Color3.fromRGB(120, 180, 80), -- Green theme
 
-        -- Base stats (these override Config defaults)
         stats = {
-            -- Stamina-focused for ability synergy
-            MAX_STAMINA = 120,          -- Higher stamina pool
+            -- Larger stamina pool (more to manage)
+            MAX_STAMINA = 115,
             REGEN_MAX_RATE = 50,        -- Faster top-off
 
-            -- Burst specialization
-            BURST_SPEED_MULT = 1.3,     -- Base burst is slightly weaker...
-            BURST_DURATION = 1.8,       -- ...but lasts longer
-            BURST_COST = 20,            -- Cheaper burst
-            BURST_TURN_PENALTY = 0.7,   -- Less turn penalty (ability enhances this further)
-
-            -- Balanced elsewhere
+            -- Slightly slower base (trade-off for burst power)
             BASE_SPEED = 38,
             SPRINT_SPEED = 78,
+
+            -- Burst tuning
+            BURST_DURATION = 1.8,       -- Longer burst window
+            BURST_COST = 20,            -- Cheaper to encourage usage
+            BURST_TURN_PENALTY = 0.6,   -- Less harsh turn penalty
         },
 
-        -- Ability-specific modifiers (handled in ability system)
         abilityParams = {
-            maxStaminaBurstMult = 1.6,  -- Burst multiplier at 100% stamina
-            lowStaminaBurstMult = 1.2,  -- Burst multiplier at low stamina
-            staminaThreshold = 0.8,     -- Above 80% = "high stamina"
-            burstTurnBonus = 1.5,       -- Turn rate multiplier during burst
+            -- Stamina thresholds
+            lowThreshold = 0.50,        -- Below 50% = low (no bonus)
+            highThreshold = 0.85,       -- Above 85% = high (BREAKS 100!)
+
+            -- Burst multipliers (applied ON TOP of base 1.15x)
+            lowStaminaMult = 1.0,       -- 78 * 1.15 * 1.0 = 90 (no bonus)
+            midStaminaMult = 1.13,      -- 78 * 1.15 * 1.13 = 101 (just over!)
+            highStaminaMult = 1.30,     -- 78 * 1.15 * 1.30 = 117 (BREAKS CAP!)
+
+            -- Turn bonus during burst (counteracts penalty at high stamina)
+            burstTurnBonus = 1.8,
         },
     },
 
     -- Johnny Joestar - Drift Surge
-    -- Exiting drift gives a speed boost
+    -- Hits the cap (100) through technical execution. Best cornering.
     Johnny = {
         displayName = "Johnny Joestar",
-        description = "Technical precision. Drifts build into devastating straightaway bursts.",
+        description = "Technical precision. Perfect drifts hit the 100 speed cap.",
         ability = "Drift Surge",
-        abilityDescription = "Exiting drift grants a speed boost based on drift duration",
+        abilityDescription = "Exiting drift grants speed boost - max drift hits exactly 100!",
         modelName = "Johnny",
 
         portraitColor = Color3.fromRGB(80, 120, 200), -- Blue theme
 
         stats = {
-            -- Drift specialization
-            DRIFT_TURN_BONUS = 2.5,     -- Tighter drift turning
-            DRIFT_STAMINA_DRAIN = 5,    -- Lower drift stamina cost
-            DRIFT_RELEASE_RETAIN = 0.98, -- Keep more speed on drift exit
+            -- Standard stamina
+            MAX_STAMINA = 100,
 
-            -- Balanced stats
+            -- Slightly faster sprint (technical racer)
             BASE_SPEED = 40,
             SPRINT_SPEED = 82,
-            MAX_STAMINA = 95,
+            ACCELERATION = 1.3,         -- Snappier for drift exits
 
-            -- Good acceleration for drift exits
-            ACCELERATION = 1.3,
+            -- Enhanced drift capabilities
+            DRIFT_TURN_BONUS = 2.5,     -- Tightest drifts
+            DRIFT_STAMINA_DRAIN = 5,    -- Cheaper drifts (was 8)
+            DRIFT_RELEASE_RETAIN = 0.96, -- Almost no speed loss (was 0.92)
+
+            -- Normal burst (doesn't benefit specially)
+            BURST_SPEED_MULT = 1.15,    -- 82 * 1.15 = 94
         },
 
         abilityParams = {
-            driftBoostBase = 1.15,      -- Minimum boost on drift exit
-            driftBoostMax = 1.4,        -- Maximum boost after long drift
-            driftBoostDuration = 1.2,   -- How long the boost lasts
-            driftTimeForMaxBoost = 1.5, -- Seconds of drifting for max boost
+            -- Drift surge scaling
+            driftBoostMin = 1.10,       -- Minimum boost (short drift): 82 * 1.10 = 90
+            driftBoostMax = 1.22,       -- Maximum boost: 82 * 1.22 = 100 exact!
+            driftBoostDuration = 1.6,   -- Long enough to chain or use on straight
+
+            -- Drift timing
+            minDriftTime = 0.3,         -- Minimum drift to trigger any surge
+            maxDriftTime = 1.2,         -- Drift time for max surge
+
+            -- Surge can be refreshed by new drift
+            surgeRefreshable = true,
         },
     },
 
-    -- Diego Brando - Launch Jump
-    -- Jumping during burst is supercharged
+    -- Diego Brando - Aerial Burst
+    -- Doesn't compete on raw speed. Wins through shortcuts and positioning.
     Diego = {
         displayName = "Diego Brando",
-        description = "Predatory aerial hunter. Combine burst with jumps for explosive air.",
-        ability = "Launch Jump",
-        abilityDescription = "Jumping during burst launches you with supercharged power",
+        description = "Predatory aerial hunter. Double jump triggers burst and unlocks shortcuts.",
+        ability = "Aerial Burst",
+        abilityDescription = "Double jump triggers a speed burst and enhanced air control",
         modelName = "Diego",
 
         portraitColor = Color3.fromRGB(200, 160, 60), -- Gold/yellow theme
 
         stats = {
-            -- Jump-focused
-            JUMP_POWER = 75,            -- Stronger base jump
-            DOUBLE_JUMP_POWER = 65,     -- Stronger double jump
-            JUMP_COST = 18,             -- Cheaper jumps
-            DOUBLE_JUMP_COST = 22,
-            AIR_CONTROL = 0.2,          -- Better air control
-            DOUBLE_JUMP_TURN_RATE = 140, -- Better air turning
-
-            -- Aggressive ground speed
-            SPRINT_SPEED = 85,          -- Faster sprint
-            BASE_SPEED = 42,            -- Faster base
-
-            -- Burst synergy for jump combos
-            BURST_DURATION = 1.3,       -- Shorter burst window
-            BURST_COOLDOWN = 2.5,       -- Faster cooldown for more burst-jump combos
-
-            -- Trade-off: lower stamina
+            -- Slightly lower stamina (aggressive playstyle)
             MAX_STAMINA = 90,
+
+            -- Good ground speed, but not best
+            BASE_SPEED = 42,
+            SPRINT_SPEED = 80,
+
+            -- Enhanced jump baseline
+            JUMP_POWER = 72,            -- Stronger base jump (was 66)
+            DOUBLE_JUMP_POWER = 60,     -- Stronger double jump (was 55)
+            JUMP_COST = 18,             -- Cheaper jumps
+            DOUBLE_JUMP_COST = 22,      -- Cheaper double jumps
+
+            -- Superior air control
+            AIR_CONTROL = 0.25,         -- Was 0.15
+            AIR_TURN_RATE = 25,         -- Was 15
+            DOUBLE_JUMP_TURN_RATE = 180, -- Near-instant redirects (was 120)
+            DOUBLE_JUMP_TURN_DURATION = 1.0, -- Was 0.8
+
+            -- Normal burst (slightly longer cooldown)
+            BURST_SPEED_MULT = 1.15,
+            BURST_COOLDOWN = 3.5,
         },
 
         abilityParams = {
-            burstJumpMult = 1.8,        -- Jump power multiplier during burst
-            burstDoubleJumpMult = 2.0,  -- Double jump is even more boosted
-            launchSpeedBoost = 1.2,     -- Horizontal speed boost on burst-jump
+            -- Aerial burst (triggers on double jump)
+            aerialBurstMult = 1.15,     -- 80 * 1.15 = 92 speed
+            aerialBurstDuration = 1.3,  -- Carries through landing
+
+            -- Enhanced double jump power during aerial burst
+            doubleJumpBoost = 1.35,     -- 60 * 1.35 = 81 power (big air!)
+
+            -- Forward momentum on double jump
+            forwardMomentumBoost = 0.2, -- Adds 20% of current speed as forward impulse
         },
     },
 
