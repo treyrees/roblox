@@ -1007,10 +1007,11 @@ local function updateCamera(dt)
     state.cameraAngle = state.cameraAngle + angleDiff * smoothing
 
     local horsePos = horse.PrimaryPart.Position
+    -- Camera positioned behind the horse (opposite to movement direction)
     local behindOffset = Vector3.new(
-        math.sin(state.cameraAngle) * Config.CAMERA_DISTANCE,
+        -math.sin(state.cameraAngle) * Config.CAMERA_DISTANCE,
         Config.CAMERA_HEIGHT,
-        math.cos(state.cameraAngle) * Config.CAMERA_DISTANCE
+        -math.cos(state.cameraAngle) * Config.CAMERA_DISTANCE
     )
 
     local cameraPos = horsePos + behindOffset
