@@ -1018,9 +1018,41 @@ end
 -- MOUNT / DISMOUNT
 -- ============================================
 local function mount(horse)
-    if state.isMounted then return end
-    if not state.humanoid or not state.rootPart then return end
-    if not horse or not horse.PrimaryPart then return end
+    print("[MountedMovement] Mount called with horse:", horse and horse.Name or "nil")
+
+    if state.isMounted then
+        print("[MountedMovement] Already mounted, ignoring")
+        return
+    end
+    if not state.humanoid or not state.rootPart then
+        print("[MountedMovement] No humanoid or rootPart - waiting for character")
+        return
+    end
+    if not horse then
+        print("[MountedMovement] No horse provided")
+        return
+    end
+
+    -- Find PrimaryPart if not set
+    if not horse.PrimaryPart then
+        print("[MountedMovement] Horse has no PrimaryPart, searching...")
+        local candidates = {"HumanoidRootPart", "Torso", "Body"}
+        for _, name in ipairs(candidates) do
+            local part = horse:FindFirstChild(name, true)
+            if part and part:IsA("BasePart") then
+                horse.PrimaryPart = part
+                print("[MountedMovement] Set PrimaryPart to:", name)
+                break
+            end
+        end
+    end
+
+    if not horse.PrimaryPart then
+        print("[MountedMovement] ERROR: Could not find PrimaryPart for horse")
+        return
+    end
+
+    print("[MountedMovement] Using PrimaryPart:", horse.PrimaryPart.Name)
 
     -- Load character data from server and apply stats
     loadCharacterData()
@@ -1070,11 +1102,23 @@ local function mount(horse)
     camera.CameraType = Enum.CameraType.Scriptable
 
     -- Initialize procedural horse animation
-    state.horseAnimator = HorseAnimation.new(horse)
+    local animSuccess, animResult = pcall(function()
+        return HorseAnimation.new(horse)
+    end)
+    if animSuccess then
+        state.horseAnimator = animResult
+        print("[MountedMovement] Horse animation initialized")
+    else
+        warn("[MountedMovement] Failed to initialize horse animation:", animResult)
+        state.horseAnimator = nil
+    end
 
     -- Show UI
     if screenGui then
         screenGui.Enabled = true
+        print("[MountedMovement] UI enabled")
+    else
+        warn("[MountedMovement] No screenGui found!")
     end
 
     print("[MountedMovement] Mounted horse as", characterData.id or "default")
@@ -1178,6 +1222,7 @@ player.CharacterAdded:Connect(setupCharacter)
 player.CharacterRemoving:Connect(cleanupCharacter)
 
 MountHorse.OnClientEvent:Connect(function(horse)
+    print("[MountedMovement] Received MountHorse event, horse:", horse and horse:GetFullName() or "nil")
     mount(horse)
 end)
 
