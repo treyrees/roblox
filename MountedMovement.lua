@@ -474,8 +474,8 @@ local function updateMovement(dt)
     local movement = state.velocity * dt
     local verticalMovement = state.verticalVelocity * dt
 
-    -- Ground check for landing
-    if state.verticalVelocity < 0 then
+    -- Ground check for landing (skip during grace period to prevent false landings)
+    if state.verticalVelocity < 0 and state.jumpGraceTimer <= 0 then
         local rayParams = RaycastParams.new()
         rayParams.FilterDescendantsInstances = {horse, state.character}
         rayParams.FilterType = Enum.RaycastFilterType.Exclude
@@ -485,6 +485,8 @@ local function updateMovement(dt)
             verticalMovement = result.Position.Y - currentPos.Y + 2 -- Keep horse above ground
             state.verticalVelocity = 0
             state.isGrounded = true
+            state.canDoubleJump = false
+            state.doubleJumpTurnTimer = 0
         end
     end
 
