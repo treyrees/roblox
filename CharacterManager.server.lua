@@ -98,147 +98,52 @@ local function applyCharacterModel(player, characterId)
     local costumeModel = getCharacterModel(characterId)
     if not costumeModel then
         print("[CharacterManager] No model found, keeping default avatar for", characterId)
-        -- Show default avatar parts if no costume
-        for _, part in ipairs(character:GetDescendants()) do
-            if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
-                part.Transparency = 0
-            end
-        end
         return true
     end
 
-    -- Hide the default avatar body parts (but keep it functional for animations)
-    for _, part in ipairs(character:GetDescendants()) do
-        if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
-            part.Transparency = 1
-        end
-        -- Only destroy accessories and body colors, keep Shirt/Pants for fallback
-        if part:IsA("Accessory") or part:IsA("BodyColors") then
-            part:Destroy()
+    -- Remove player's existing accessories and clothing (we'll apply costume's)
+    for _, item in ipairs(character:GetDescendants()) do
+        if item:IsA("Accessory") or item:IsA("Shirt") or item:IsA("Pants") or item:IsA("BodyColors") then
+            item:Destroy()
         end
     end
 
-    -- Also hide face
-    local head = character:FindFirstChild("Head")
-    if head then
-        local face = head:FindFirstChild("face") or head:FindFirstChildOfClass("Decal")
-        if face then
-            face.Transparency = 1
-        end
-    end
-
-    -- Copy clothing from costume to player (if costume has clothing)
+    -- Apply clothing from costume to player (renders on player's visible body)
     local costumeShirt = costumeModel:FindFirstChildOfClass("Shirt")
     if costumeShirt then
-        local existingShirt = character:FindFirstChildOfClass("Shirt")
-        if existingShirt then existingShirt:Destroy() end
         costumeShirt:Clone().Parent = character
     end
 
     local costumePants = costumeModel:FindFirstChildOfClass("Pants")
     if costumePants then
-        local existingPants = character:FindFirstChildOfClass("Pants")
-        if existingPants then existingPants:Destroy() end
         costumePants:Clone().Parent = character
     end
 
-    -- Prepare the costume model
-    costumeModel.Name = "CostumeOverlay"
-
-    -- Remove the costume's humanoid (we don't need it)
-    local costumeHumanoid = costumeModel:FindFirstChildOfClass("Humanoid")
-    if costumeHumanoid then
-        costumeHumanoid:Destroy()
+    -- Apply body colors from costume if present
+    local costumeBodyColors = costumeModel:FindFirstChildOfClass("BodyColors")
+    if costumeBodyColors then
+        costumeBodyColors:Clone().Parent = character
     end
 
-    -- Remove ALL Motor6D joints from costume to prevent animation conflicts
-    for _, descendant in ipairs(costumeModel:GetDescendants()) do
-        if descendant:IsA("Motor6D") then
-            descendant:Destroy()
-        end
-    end
+    -- Now handle accessories from costume (hats, hair, etc.)
+    -- These get welded to the player as overlays
+    local accessoryContainer = Instance.new("Folder")
+    accessoryContainer.Name = "CostumeOverlay"
+    accessoryContainer.Parent = character
 
-    -- Unanchor all parts and make them non-collidable
-    for _, part in ipairs(costumeModel:GetDescendants()) do
-        if part:IsA("BasePart") then
-            part.Anchored = false
-            part.CanCollide = false
-            part.Massless = true
-        end
-    end
-
-    -- Parent costume to character
-    costumeModel.Parent = character
-
-    -- Check if player is R15 (costume models are R6)
-    local playerIsR15 = isR15(character)
-
-    -- Weld costume parts to corresponding player body parts
-    local weldedParts = {}
-
-    for _, costumepartName in ipairs(R6_PARTS) do
-        local costumePart = costumeModel:FindFirstChild(costumepartName)
-        if not costumePart then continue end
-
-        -- Find the corresponding player part
-        local playerPartName = costumepartName
-        if playerIsR15 and R6_TO_R15_MAP[costumepartName] then
-            playerPartName = R6_TO_R15_MAP[costumepartName]
-        end
-
-        local playerPart = character:FindFirstChild(playerPartName)
-        if not playerPart then
-            -- Fallback to rootPart if no matching part found
-            playerPart = rootPart
-        end
-
-        -- Remove any existing welds on this costume part
-        for _, child in ipairs(costumePart:GetChildren()) do
-            if child:IsA("Weld") or child:IsA("Motor6D") then
-                child:Destroy()
-            end
-        end
-
-        local weld = Instance.new("Weld")
-        weld.Name = "CostumeWeld"
-        weld.Part0 = playerPart
-        weld.Part1 = costumePart
-        -- No rotation - R6 models are already correctly oriented
-        weld.C0 = CFrame.new()
-        weld.C1 = CFrame.new()
-        weld.Parent = costumePart
-
-        weldedParts[costumepartName] = true
-    end
-
-    -- For any remaining costume parts (accessories, etc.), weld to rootPart
-    for _, part in ipairs(costumeModel:GetDescendants()) do
-        if part:IsA("BasePart") and not weldedParts[part.Name] then
-            -- Remove any existing welds
-            for _, child in ipairs(part:GetChildren()) do
-                if child:IsA("Weld") or child:IsA("Motor6D") or child.Name == "AccessoryWeld" then
-                    child:Destroy()
-                end
-            end
-
-            -- Only weld if not already welded
-            if not part:FindFirstChild("CostumeWeld") then
-                local weld = Instance.new("Weld")
-                weld.Name = "CostumeWeld_" .. part.Name
-                weld.Part0 = rootPart
-                weld.Part1 = part
-                -- Preserve relative position to rootPart, no rotation
-                weld.C0 = rootPart.CFrame:ToObjectSpace(part.CFrame)
-                weld.C1 = CFrame.new()
-                weld.Parent = part
-            end
+    -- Clone and apply accessories from costume model
+    for _, item in ipairs(costumeModel:GetChildren()) do
+        if item:IsA("Accessory") then
+            local accessory = item:Clone()
+            -- Let Roblox's accessory system handle attachment
+            accessory.Parent = character
         end
     end
 
     -- Store reference
-    playerCharacterModels[player] = costumeModel
+    playerCharacterModels[player] = accessoryContainer
 
-    print("[CharacterManager] Applied costume overlay:", characterId, "to", player.Name, "(R15:", playerIsR15, ")")
+    print("[CharacterManager] Applied costume:", characterId, "to", player.Name)
     return true
 end
 
