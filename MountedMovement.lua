@@ -785,8 +785,9 @@ local function updateMovement(dt)
     local newPos = currentPos + Vector3.new(movement.X, verticalMovement, movement.Z)
 
     -- Apply new CFrame to horse with tilt
+    -- Add pi to rotate horse model 180 degrees so head faces movement direction
     local newCFrame = CFrame.new(newPos)
-        * CFrame.Angles(0, state.facingAngle, 0)
+        * CFrame.Angles(0, state.facingAngle + math.pi, 0)
         * CFrame.Angles(0, 0, state.currentTilt)
 
     horse:PivotTo(newCFrame)

@@ -109,12 +109,6 @@ local function setupHorse(horse)
     primaryPart.Anchored = true
     primaryPart.CanCollide = false
 
-    -- Rotate horse 180 degrees so it faces forward (away from camera)
-    -- Many Toolbox horse models have their head facing the wrong direction
-    local currentCFrame = horse:GetPivot()
-    horse:PivotTo(currentCFrame * CFrame.Angles(0, math.pi, 0))
-    print("[HorseSpawner] Rotated horse 180 degrees")
-
     -- Find or create a part to attach the ProximityPrompt
     local promptParent = primaryPart
 
