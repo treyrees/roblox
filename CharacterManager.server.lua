@@ -61,16 +61,22 @@ local function getCharacterModel(characterId)
     return model:Clone()
 end
 
--- Map of body part names for welding costume parts to corresponding player parts
-local BODY_PART_NAMES = {
-    "Head", "Torso", "UpperTorso", "LowerTorso",
-    "Left Arm", "Right Arm", "Left Leg", "Right Leg",
-    "LeftUpperArm", "LeftLowerArm", "LeftHand",
-    "RightUpperArm", "RightLowerArm", "RightHand",
-    "LeftUpperLeg", "LeftLowerLeg", "LeftFoot",
-    "RightUpperLeg", "RightLowerLeg", "RightFoot",
-    "HumanoidRootPart"
+-- R6 body part names (what our costume models use)
+local R6_PARTS = {"Head", "Torso", "Left Arm", "Right Arm", "Left Leg", "Right Leg", "HumanoidRootPart"}
+
+-- Map R6 costume parts to R15 player parts (if player is R15)
+local R6_TO_R15_MAP = {
+    ["Torso"] = "UpperTorso",
+    ["Left Arm"] = "LeftUpperArm",
+    ["Right Arm"] = "RightUpperArm",
+    ["Left Leg"] = "LeftUpperLeg",
+    ["Right Leg"] = "RightUpperLeg",
 }
+
+-- Check if character is R15 (has UpperTorso) or R6 (has Torso)
+local function isR15(character)
+    return character:FindFirstChild("UpperTorso") ~= nil
+end
 
 local function applyCharacterModel(player, characterId)
     local character = player.Character
@@ -145,6 +151,13 @@ local function applyCharacterModel(player, characterId)
         costumeHumanoid:Destroy()
     end
 
+    -- Remove ALL Motor6D joints from costume to prevent animation conflicts
+    for _, descendant in ipairs(costumeModel:GetDescendants()) do
+        if descendant:IsA("Motor6D") then
+            descendant:Destroy()
+        end
+    end
+
     -- Unanchor all parts and make them non-collidable
     for _, part in ipairs(costumeModel:GetDescendants()) do
         if part:IsA("BasePart") then
@@ -157,42 +170,55 @@ local function applyCharacterModel(player, characterId)
     -- Parent costume to character
     costumeModel.Parent = character
 
-    -- Weld costume parts to CORRESPONDING player body parts for animation support
-    -- This allows the costume to animate with the player's skeleton
+    -- Check if player is R15 (costume models are R6)
+    local playerIsR15 = isR15(character)
+
+    -- Weld costume parts to corresponding player body parts
     local weldedParts = {}
 
-    for _, partName in ipairs(BODY_PART_NAMES) do
-        local playerPart = character:FindFirstChild(partName)
-        local costumePart = costumeModel:FindFirstChild(partName)
+    for _, costumepartName in ipairs(R6_PARTS) do
+        local costumePart = costumeModel:FindFirstChild(costumepartName)
+        if not costumePart then continue end
 
-        if playerPart and costumePart then
-            -- Remove any existing welds on this costume part
-            for _, child in ipairs(costumePart:GetChildren()) do
-                if child:IsA("Weld") or child:IsA("Motor6D") then
-                    child:Destroy()
-                end
-            end
-
-            local weld = Instance.new("Weld")
-            weld.Name = "CostumeWeld"
-            weld.Part0 = playerPart
-            weld.Part1 = costumePart
-            -- Rotate 180 degrees to fix backwards orientation
-            weld.C0 = CFrame.Angles(0, math.pi, 0)
-            weld.C1 = CFrame.new()
-            weld.Parent = costumePart
-
-            weldedParts[partName] = true
+        -- Find the corresponding player part
+        local playerPartName = costumepartName
+        if playerIsR15 and R6_TO_R15_MAP[costumepartName] then
+            playerPartName = R6_TO_R15_MAP[costumepartName]
         end
+
+        local playerPart = character:FindFirstChild(playerPartName)
+        if not playerPart then
+            -- Fallback to rootPart if no matching part found
+            playerPart = rootPart
+        end
+
+        -- Remove any existing welds on this costume part
+        for _, child in ipairs(costumePart:GetChildren()) do
+            if child:IsA("Weld") or child:IsA("Motor6D") then
+                child:Destroy()
+            end
+        end
+
+        local weld = Instance.new("Weld")
+        weld.Name = "CostumeWeld"
+        weld.Part0 = playerPart
+        weld.Part1 = costumePart
+        -- No rotation - R6 models are already correctly oriented
+        weld.C0 = CFrame.new()
+        weld.C1 = CFrame.new()
+        weld.Parent = costumePart
+
+        weldedParts[costumepartName] = true
     end
 
-    -- For any remaining costume parts not matched to body parts, weld to rootPart
+    -- For any remaining costume parts (accessories, etc.), weld to rootPart
     for _, part in ipairs(costumeModel:GetDescendants()) do
         if part:IsA("BasePart") and not weldedParts[part.Name] then
-            -- Remove any existing AccessoryWeld
-            local existingWeld = part:FindFirstChild("AccessoryWeld")
-            if existingWeld then
-                existingWeld:Destroy()
+            -- Remove any existing welds
+            for _, child in ipairs(part:GetChildren()) do
+                if child:IsA("Weld") or child:IsA("Motor6D") or child.Name == "AccessoryWeld" then
+                    child:Destroy()
+                end
             end
 
             -- Only weld if not already welded
@@ -201,8 +227,8 @@ local function applyCharacterModel(player, characterId)
                 weld.Name = "CostumeWeld_" .. part.Name
                 weld.Part0 = rootPart
                 weld.Part1 = part
-                -- Include 180 degree rotation for consistent orientation
-                weld.C0 = rootPart.CFrame:ToObjectSpace(part.CFrame) * CFrame.Angles(0, math.pi, 0)
+                -- Preserve relative position to rootPart, no rotation
+                weld.C0 = rootPart.CFrame:ToObjectSpace(part.CFrame)
                 weld.C1 = CFrame.new()
                 weld.Parent = part
             end
@@ -212,7 +238,7 @@ local function applyCharacterModel(player, characterId)
     -- Store reference
     playerCharacterModels[player] = costumeModel
 
-    print("[CharacterManager] Applied costume overlay:", characterId, "to", player.Name)
+    print("[CharacterManager] Applied costume overlay:", characterId, "to", player.Name, "(R15:", playerIsR15, ")")
     return true
 end
 
