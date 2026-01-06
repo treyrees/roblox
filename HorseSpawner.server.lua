@@ -172,8 +172,30 @@ game.Players.PlayerRemoving:Connect(function(player)
     end
 end)
 
--- Spawn a test horse near the origin (typical spawn area)
--- Adjust position based on your map's spawn location
-local testHorse = createHorse(Vector3.new(10, 0, 10), "TestHorse")
+-- Find the SpawnLocation to place horse nearby
+local function findSpawnPosition()
+    -- Look for SpawnLocation in workspace
+    local spawn = workspace:FindFirstChildOfClass("SpawnLocation")
+
+    if spawn then
+        -- Place horse 10 studs in front of spawn (positive Z)
+        return spawn.Position + Vector3.new(10, 0, 0)
+    end
+
+    -- Fallback: check if there's a Spawns folder
+    local spawnsFolder = workspace:FindFirstChild("Spawns")
+    if spawnsFolder then
+        local firstSpawn = spawnsFolder:FindFirstChildOfClass("SpawnLocation")
+        if firstSpawn then
+            return firstSpawn.Position + Vector3.new(10, 0, 0)
+        end
+    end
+
+    -- Default fallback position
+    return Vector3.new(10, 0, 10)
+end
+
+local spawnPos = findSpawnPosition()
+local testHorse = createHorse(spawnPos, "TestHorse")
 
 print("[HorseSpawner] Test horse created at", testHorse.PrimaryPart.Position)
