@@ -75,12 +75,12 @@ local Config = {
     MOMENTUM_FACTOR = 0.92,    -- How much velocity carries frame-to-frame (0.9-0.99)
 
     -- Burst (double-tap sprint)
-    BURST_SPEED_MULT = 1.4,    -- Speed multiplier during burst (1.4x sprint)
+    BURST_SPEED_MULT = 1.15,   -- Base speed multiplier during burst (weaker baseline)
     BURST_DURATION = 1.5,      -- How long burst lasts (seconds)
     BURST_COST = 25,           -- Stamina cost to trigger burst
     BURST_COOLDOWN = 3.0,      -- Seconds before burst can be used again
     BURST_TAP_WINDOW = 0.3,    -- Seconds to double-tap for burst
-    BURST_TURN_PENALTY = 0.4,  -- Turn rate multiplier during burst
+    BURST_TURN_PENALTY = 0.5,  -- Turn rate multiplier during burst (slightly less harsh)
 
     -- Body Tilt
     MAX_TILT_ANGLE = 15,       -- Maximum lean angle in degrees
@@ -115,14 +115,19 @@ local characterData = {
 -- ABILITY STATE
 -- ============================================
 local abilityState = {
-    -- Gyro: Precision Burst
-    precisionBurstActive = false,
+    -- Gyro: Precision Burst (stamina-scaled)
+    gyroBurstMultiplier = 1,
 
-    -- Diego: Drift Surge
+    -- Johnny: Drift Surge
     driftStartTime = 0,
     driftSurgeActive = false,
     driftSurgeTimer = 0,
     driftSurgeSpeedMult = 1,
+
+    -- Diego: Aerial Burst (triggers on double jump)
+    aerialBurstActive = false,
+    aerialBurstTimer = 0,
+    aerialBurstSpeedMult = 1,
 
     -- Hot Pants: Phase Shift
     blinkCooldown = 0,
@@ -335,11 +340,14 @@ local function applyCharacterStats()
 end
 
 local function resetAbilityState()
-    abilityState.precisionBurstActive = false
+    abilityState.gyroBurstMultiplier = 1
     abilityState.driftStartTime = 0
     abilityState.driftSurgeActive = false
     abilityState.driftSurgeTimer = 0
     abilityState.driftSurgeSpeedMult = 1
+    abilityState.aerialBurstActive = false
+    abilityState.aerialBurstTimer = 0
+    abilityState.aerialBurstSpeedMult = 1
     abilityState.blinkCooldown = 0
     abilityState.blinkRequested = false
     abilityState.momentumBonus = 0
@@ -367,41 +375,86 @@ end
 -- CHARACTER ABILITIES
 -- ============================================
 
--- Gyro: Precision Burst - stronger at high stamina + better turning
+-- Gyro: Precision Burst - stamina-scaled burst that can BREAK 100 speed
 local function getGyroBurstMultiplier()
     if characterData.id ~= "Gyro" then return 1 end
+    if not state.isBursting then return 1 end
 
     local params = characterData.abilityParams
     local staminaRatio = state.stamina / Config.MAX_STAMINA
 
-    if staminaRatio >= (params.staminaThreshold or 0.8) then
-        return params.maxStaminaBurstMult or 1.6
+    local lowThreshold = params.lowThreshold or 0.50
+    local highThreshold = params.highThreshold or 0.85
+
+    if staminaRatio < lowThreshold then
+        -- Below 50%: no bonus (returns base 1.15x burst)
+        return params.lowStaminaMult or 1.0
+    elseif staminaRatio >= highThreshold then
+        -- Above 85%: BREAKS 100! (1.15 * 1.30 = 1.495x = 117 speed for Gyro)
+        return params.highStaminaMult or 1.30
     else
-        -- Lerp between low and max based on stamina
-        local t = staminaRatio / (params.staminaThreshold or 0.8)
-        local lowMult = params.lowStaminaBurstMult or 1.2
-        local highMult = params.maxStaminaBurstMult or 1.6
-        return lowMult + (highMult - lowMult) * t
+        -- 50-85%: interpolate between mid values
+        local t = (staminaRatio - lowThreshold) / (highThreshold - lowThreshold)
+        local midMult = params.midStaminaMult or 1.13
+        local highMult = params.highStaminaMult or 1.30
+        -- Lerp from low (1.0) to mid (1.13) in lower half, mid to high in upper half
+        if t < 0.5 then
+            return 1.0 + (midMult - 1.0) * (t * 2)
+        else
+            return midMult + (highMult - midMult) * ((t - 0.5) * 2)
+        end
     end
 end
 
 local function getGyroBurstTurnBonus()
     if characterData.id ~= "Gyro" or not state.isBursting then return 1 end
-    return characterData.abilityParams.burstTurnBonus or 1.5
+    -- Turn bonus scales with stamina too - better turning at high stamina
+    local staminaRatio = state.stamina / Config.MAX_STAMINA
+    local highThreshold = characterData.abilityParams.highThreshold or 0.85
+    if staminaRatio >= highThreshold then
+        return characterData.abilityParams.burstTurnBonus or 1.8
+    end
+    return 1.2 -- Modest turn bonus at lower stamina
 end
 
--- Diego: Launch Jump - supercharged jumps during burst
-local function getDiegoJumpMultiplier()
-    if characterData.id ~= "Diego" or not state.isBursting then return 1 end
-    return characterData.abilityParams.burstJumpMult or 1.8
+-- Diego: Aerial Burst - double jump triggers speed burst and enhanced air control
+local function triggerDiegoAerialBurst()
+    if characterData.id ~= "Diego" then return end
+
+    local params = characterData.abilityParams
+    abilityState.aerialBurstActive = true
+    abilityState.aerialBurstTimer = params.aerialBurstDuration or 1.3
+    abilityState.aerialBurstSpeedMult = params.aerialBurstMult or 1.15
+
+    -- Add forward momentum boost
+    local momentumBoost = params.forwardMomentumBoost or 0.2
+    local facingDir = Vector3.new(math.sin(state.facingAngle), 0, math.cos(state.facingAngle))
+    state.velocity = state.velocity + facingDir * (state.currentSpeed * momentumBoost)
 end
 
-local function getDiegoDoubleJumpMultiplier()
-    if characterData.id ~= "Diego" or not state.isBursting then return 1 end
-    return characterData.abilityParams.burstDoubleJumpMult or 2.0
+local function updateDiegoAerialBurst(dt)
+    if characterData.id ~= "Diego" then return end
+
+    if abilityState.aerialBurstActive then
+        abilityState.aerialBurstTimer = abilityState.aerialBurstTimer - dt
+        if abilityState.aerialBurstTimer <= 0 then
+            abilityState.aerialBurstActive = false
+            abilityState.aerialBurstSpeedMult = 1
+        end
+    end
 end
 
--- Johnny: Drift Surge - speed boost on drift exit
+local function getDiegoAerialBurstMultiplier()
+    if characterData.id ~= "Diego" or not abilityState.aerialBurstActive then return 1 end
+    return abilityState.aerialBurstSpeedMult
+end
+
+local function getDiegoDoubleJumpBoost()
+    if characterData.id ~= "Diego" then return 1 end
+    return characterData.abilityParams.doubleJumpBoost or 1.35
+end
+
+-- Johnny: Drift Surge - speed boost on drift exit (max drift = exactly 100 speed!)
 local function updateJohnnyAbility(dt)
     if characterData.id ~= "Johnny" then return end
 
@@ -416,18 +469,23 @@ local function updateJohnnyAbility(dt)
     elseif state.wasDrifting and not activeDrift and abilityState.driftStartTime > 0 then
         -- Ended drift - calculate boost
         local driftDuration = tick() - abilityState.driftStartTime
-        local maxDriftTime = params.driftTimeForMaxBoost or 1.5
-        local t = math.clamp(driftDuration / maxDriftTime, 0, 1)
+        local minDriftTime = params.minDriftTime or 0.3
+        local maxDriftTime = params.maxDriftTime or 1.2
 
-        local baseBoost = params.driftBoostBase or 1.15
-        local maxBoost = params.driftBoostMax or 1.4
-        abilityState.driftSurgeSpeedMult = baseBoost + (maxBoost - baseBoost) * t
-        abilityState.driftSurgeActive = true
-        abilityState.driftSurgeTimer = params.driftBoostDuration or 1.2
+        -- Only grant surge if drift was long enough
+        if driftDuration >= minDriftTime then
+            local t = math.clamp((driftDuration - minDriftTime) / (maxDriftTime - minDriftTime), 0, 1)
+
+            local minBoost = params.driftBoostMin or 1.10
+            local maxBoost = params.driftBoostMax or 1.22  -- 82 * 1.22 = 100 exact!
+            abilityState.driftSurgeSpeedMult = minBoost + (maxBoost - minBoost) * t
+            abilityState.driftSurgeActive = true
+            abilityState.driftSurgeTimer = params.driftBoostDuration or 1.6
+        end
         abilityState.driftStartTime = 0
     end
 
-    -- Update surge timer
+    -- Update surge timer (can be refreshed by new drift if surgeRefreshable)
     if abilityState.driftSurgeActive then
         abilityState.driftSurgeTimer = abilityState.driftSurgeTimer - dt
         if abilityState.driftSurgeTimer <= 0 then
@@ -611,6 +669,9 @@ local function calculateTargetSpeed()
 
     -- Johnny: Apply drift surge multiplier
     target = target * getJohnnyDriftSurgeMultiplier()
+
+    -- Diego: Apply aerial burst multiplier (from double jump)
+    target = target * getDiegoAerialBurstMultiplier()
 
     if state.penaltyTimer > 0 then
         target = target * Config.EMPTY_STAMINA_PENALTY
@@ -808,16 +869,8 @@ local function handleJump()
             state.stamina = state.stamina - Config.JUMP_COST
         end
 
-        -- Diego: Supercharged jump during burst
-        local jumpPower = Config.JUMP_POWER * getDiegoJumpMultiplier()
+        local jumpPower = Config.JUMP_POWER
         state.verticalVelocity = jumpPower
-
-        -- Diego: Also boost horizontal speed during burst jump
-        if characterData.id == "Diego" and state.isBursting then
-            local params = characterData.abilityParams
-            local speedBoost = params.launchSpeedBoost or 1.2
-            state.currentSpeed = state.currentSpeed * speedBoost
-        end
 
         state.isGrounded = false
         state.canDoubleJump = true
@@ -832,11 +885,16 @@ local function handleJump()
             state.stamina = state.stamina - Config.DOUBLE_JUMP_COST
         end
 
-        -- Diego: Even more supercharged double jump during burst
-        local doubleJumpPower = Config.DOUBLE_JUMP_POWER * getDiegoDoubleJumpMultiplier()
+        -- Diego: Enhanced double jump power + triggers Aerial Burst!
+        local doubleJumpPower = Config.DOUBLE_JUMP_POWER * getDiegoDoubleJumpBoost()
         state.verticalVelocity = doubleJumpPower
         state.canDoubleJump = false
         state.doubleJumpTurnTimer = Config.DOUBLE_JUMP_TURN_DURATION
+
+        -- Diego: Trigger Aerial Burst on double jump!
+        if characterData.id == "Diego" then
+            triggerDiegoAerialBurst()
+        end
     end
 end
 
@@ -940,22 +998,47 @@ local function updateUI()
         staminaFill.BackgroundColor3 = Color3.fromRGB(50, 200, 80)
     end
 
-    local maxSpeed = Config.SPRINT_SPEED * Config.BURST_SPEED_MULT
-    local speedRatio = state.currentSpeed / maxSpeed
-    speedFill.Size = UDim2.new(math.min(1, speedRatio), 0, 1, 0)
-    speedLabel.Text = string.format("%.0f", state.currentSpeed)
+    -- Speed bar: 100 is the visual cap, but Gyro can BREAK it!
+    local UI_SPEED_CAP = 100
+    local speedRatio = state.currentSpeed / UI_SPEED_CAP
+    local isOverCap = state.currentSpeed > UI_SPEED_CAP
 
-    if state.isBursting then
-        speedFill.BackgroundColor3 = Color3.fromRGB(255, 140, 50)
-    elseif state.isSprinting and state.currentSpeed > Config.BASE_SPEED then
-        speedFill.BackgroundColor3 = Color3.fromRGB(50, 200, 220)
+    if isOverCap then
+        -- Gyro breaking 100: bar overflows! Cap visual at 130% width
+        local overflowRatio = math.min(1.3, speedRatio)
+        speedFill.Size = UDim2.new(overflowRatio, 0, 1, 0)
+        -- Golden glow effect for breaking the cap
+        speedFill.BackgroundColor3 = Color3.fromRGB(255, 215, 0)
     else
-        speedFill.BackgroundColor3 = Color3.fromRGB(80, 150, 220)
+        speedFill.Size = UDim2.new(math.min(1, speedRatio), 0, 1, 0)
+
+        if state.isBursting then
+            speedFill.BackgroundColor3 = Color3.fromRGB(255, 140, 50)
+        elseif abilityState.driftSurgeActive then
+            -- Johnny drift surge: cyan
+            speedFill.BackgroundColor3 = Color3.fromRGB(0, 220, 255)
+        elseif abilityState.aerialBurstActive then
+            -- Diego aerial burst: purple
+            speedFill.BackgroundColor3 = Color3.fromRGB(180, 100, 255)
+        elseif state.isSprinting and state.currentSpeed > Config.BASE_SPEED then
+            speedFill.BackgroundColor3 = Color3.fromRGB(50, 200, 220)
+        else
+            speedFill.BackgroundColor3 = Color3.fromRGB(80, 150, 220)
+        end
     end
+
+    -- Speed label shows actual speed (can exceed 100)
+    speedLabel.Text = string.format("%.0f", state.currentSpeed)
 
     local status = {}
     if state.isBursting then
-        table.insert(status, "BURST")
+        -- Gyro: Show stamina-scaled burst power
+        if characterData.id == "Gyro" then
+            local staminaPct = math.floor((state.stamina / Config.MAX_STAMINA) * 100)
+            table.insert(status, string.format("BURST[%d%%]", staminaPct))
+        else
+            table.insert(status, "BURST")
+        end
     elseif state.isSprinting then
         table.insert(status, "SPRINT")
     end
@@ -976,6 +1059,9 @@ local function updateUI()
     -- Character-specific ability status
     if characterData.id == "Johnny" and abilityState.driftSurgeActive then
         table.insert(status, string.format("SURGE:%.1f", abilityState.driftSurgeTimer))
+    end
+    if characterData.id == "Diego" and abilityState.aerialBurstActive then
+        table.insert(status, string.format("AERIAL:%.1f", abilityState.aerialBurstTimer))
     end
     if characterData.id == "HotPants" then
         if abilityState.blinkCooldown > 0 then
@@ -1242,6 +1328,7 @@ RunService.RenderStepped:Connect(function(dt)
 
     -- Character abilities (before movement so they can affect speed)
     updateJohnnyAbility(dt)
+    updateDiegoAerialBurst(dt)
     updateBlinkCooldown(dt)
     updateSandmanAbility(dt)
 
