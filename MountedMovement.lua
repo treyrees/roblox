@@ -34,15 +34,15 @@ local Config = {
     SPRINT_DRAIN = 15,         -- Per second while sprinting
     JUMP_COST = 20,            -- Flat cost per jump
     REGEN_MIN_RATE = 8,        -- Regen per second when stamina is low
-    REGEN_MAX_RATE = 25,       -- Regen per second when stamina is high (satisfying to top off)
+    REGEN_MAX_RATE = 45,       -- Regen per second when stamina is high (very fast top-off)
     REGEN_DELAY = 0.5,         -- Seconds before regen starts
     EMPTY_PENALTY_DURATION = 2, -- Seconds of penalty when emptied
 
     -- Turning (degrees per second for frame-rate independence)
     BASE_TURN_RATE = 480,      -- Degrees per second at low speed
     MIN_TURN_RATE = 100,       -- Degrees per second at max speed (harder to turn when fast)
-    DRIFT_TURN_BONUS = 2.0,    -- Multiplier to turn rate while drifting
-    DRIFT_SPEED_RETAIN = 0.85, -- Speed retention while drifting (vs braking)
+    DRIFT_TURN_BONUS = 2.0,    -- Multiplier to turn rate while drifting (for aiming)
+    DRIFT_RELEASE_RETAIN = 0.92, -- Speed retained when releasing drift (sharp turn)
     DRIFT_STAMINA_DRAIN = 8,   -- Additional stamina drain per second while drifting
     
     -- Jumping
@@ -79,6 +79,11 @@ local state = {
     isSprinting = false,
     isDrifting = false,
     jumpRequested = false,
+
+    -- Drift (momentum-preserving turn prep)
+    wasDrifting = false,           -- Track previous frame's drift state (for release detection)
+    driftVelocityDir = Vector3.zero, -- Locked velocity direction while drifting
+    driftSpeed = 0,                -- Speed when drift started
     
     -- Physics
     currentSpeed = 0,
@@ -265,9 +270,11 @@ local function updateStamina(dt)
     else
         state.regenTimer = math.max(0, state.regenTimer - dt)
         if state.regenTimer <= 0 and state.penaltyTimer <= 0 then
-            -- Progressive regen: slower when empty, faster when nearly full
+            -- Exponential regen: slow when empty, very fast when nearly full
             local staminaRatio = state.stamina / Config.MAX_STAMINA
-            local regenRate = Config.REGEN_MIN_RATE + (staminaRatio * (Config.REGEN_MAX_RATE - Config.REGEN_MIN_RATE))
+            -- Use exponential curve (ratio^2) for more aggressive high-stamina regen
+            local curve = staminaRatio * staminaRatio
+            local regenRate = Config.REGEN_MIN_RATE + (curve * (Config.REGEN_MAX_RATE - Config.REGEN_MIN_RATE))
             state.stamina = math.min(Config.MAX_STAMINA, state.stamina + (regenRate * dt))
         end
     end
@@ -296,11 +303,6 @@ local function calculateTargetSpeed()
     -- Empty stamina penalty
     if state.penaltyTimer > 0 then
         target = target * Config.EMPTY_STAMINA_PENALTY
-    end
-
-    -- Drift speed retention (slower than full sprint, faster than braking)
-    if state.isDrifting and state.isSprinting and not state.isBursting then
-        target = target * Config.DRIFT_SPEED_RETAIN
     end
 
     return target
@@ -409,12 +411,40 @@ local function updateMovement(dt)
     -- Calculate velocity from facing angle and speed
     local facingDir = Vector3.new(-math.sin(state.facingAngle), 0, -math.cos(state.facingAngle))
     local targetVelocity = facingDir * state.currentSpeed
-    
+
+    -- Drift system: momentum-preserving turn preparation
+    local activeDrift = state.isDrifting and state.isSprinting and state.isGrounded and not state.isBursting
+
+    -- Drift start: lock in current velocity direction
+    if activeDrift and not state.wasDrifting then
+        if state.velocity.Magnitude > 0.1 then
+            state.driftVelocityDir = state.velocity.Unit
+        else
+            state.driftVelocityDir = facingDir
+        end
+        state.driftSpeed = state.currentSpeed
+    end
+
+    -- Drift release: snap to new facing direction with speed retention
+    if state.wasDrifting and not activeDrift and state.driftSpeed > 0 then
+        local retainedSpeed = state.driftSpeed * Config.DRIFT_RELEASE_RETAIN
+        state.velocity = facingDir * retainedSpeed
+        state.currentSpeed = retainedSpeed
+        state.driftSpeed = 0
+    end
+
+    state.wasDrifting = activeDrift
+
     -- Apply momentum (smoothing) - frame-rate independent using exponential decay
     -- At 60fps baseline, dt*60=1, so we get original behavior
     local smoothing = 1 - math.pow(Config.MOMENTUM_FACTOR, dt * 60)
     if state.isGrounded then
-        state.velocity = state.velocity:Lerp(targetVelocity, smoothing)
+        if activeDrift then
+            -- While drifting: keep velocity in locked direction, model turns freely
+            state.velocity = state.driftVelocityDir * state.currentSpeed
+        else
+            state.velocity = state.velocity:Lerp(targetVelocity, smoothing)
+        end
     else
         -- In air: limited control (also frame-rate independent)
         local airInfluence = state.moveDirection * Config.AIR_CONTROL * state.currentSpeed * dt * 60
