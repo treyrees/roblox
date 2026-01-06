@@ -36,16 +36,16 @@ local Config = {
     REGEN_DELAY = 0.5,         -- Seconds before regen starts
     EMPTY_PENALTY_DURATION = 2, -- Seconds of penalty when emptied
     
-    -- Turning
-    BASE_TURN_RATE = 8.0,      -- Degrees per frame at low speed
-    MIN_TURN_RATE = 2.5,       -- Degrees per frame at max speed
+    -- Turning (degrees per second for frame-rate independence)
+    BASE_TURN_RATE = 480,      -- Degrees per second at low speed
+    MIN_TURN_RATE = 150,       -- Degrees per second at max speed
     DRIFT_TURN_BONUS = 2.0,    -- Multiplier to turn rate while drifting
     DRIFT_SPEED_RETAIN = 0.85, -- Speed retention while drifting (vs braking)
     DRIFT_STAMINA_DRAIN = 8,   -- Additional stamina drain per second while drifting
     
     -- Jumping
     JUMP_POWER = 55,
-    AIR_TURN_RATE = 0.25,      -- Degrees per frame in air (~15°/sec at 60fps)
+    AIR_TURN_RATE = 15,        -- Degrees per second in air
     AIR_CONTROL = 0.15,        -- How much you can influence air velocity (0-1)
     
     -- Feel
@@ -83,15 +83,23 @@ local state = {
 -- INPUT HANDLING
 -- ============================================
 local function bindInputs()
-    -- Sprint
+    -- Sprint (explicit Begin/End handling for reliability)
     ContextActionService:BindAction("Sprint", function(_, inputState)
-        state.isSprinting = (inputState == Enum.UserInputState.Begin)
+        if inputState == Enum.UserInputState.Begin then
+            state.isSprinting = true
+        elseif inputState == Enum.UserInputState.End then
+            state.isSprinting = false
+        end
         return Enum.ContextActionResult.Pass
     end, false, Enum.KeyCode.LeftShift)
-    
-    -- Drift
+
+    -- Drift (explicit Begin/End handling for reliability)
     ContextActionService:BindAction("Drift", function(_, inputState)
-        state.isDrifting = (inputState == Enum.UserInputState.Begin)
+        if inputState == Enum.UserInputState.Begin then
+            state.isDrifting = true
+        elseif inputState == Enum.UserInputState.End then
+            state.isDrifting = false
+        end
         return Enum.ContextActionResult.Pass
     end, false, Enum.KeyCode.Q)
     
@@ -102,6 +110,16 @@ local function bindInputs()
         end
         return Enum.ContextActionResult.Pass
     end, false, Enum.KeyCode.Space)
+end
+
+local function unbindInputs()
+    ContextActionService:UnbindAction("Sprint")
+    ContextActionService:UnbindAction("Drift")
+    ContextActionService:UnbindAction("Jump")
+    -- Reset input state
+    state.isSprinting = false
+    state.isDrifting = false
+    state.jumpRequested = false
 end
 
 local function getMoveDirection()
@@ -203,22 +221,23 @@ local function calculateTargetSpeed()
     return target
 end
 
-local function calculateTurnRate()
-    -- Turn rate decreases with speed
+local function calculateTurnRate(dt)
+    -- Turn rate decreases with speed (degrees per second)
     local speedRatio = state.currentSpeed / Config.SPRINT_SPEED
     local turnRate = Config.BASE_TURN_RATE - (speedRatio * (Config.BASE_TURN_RATE - Config.MIN_TURN_RATE))
-    
+
     -- Drift bonus
     if state.isDrifting and state.isSprinting and state.isGrounded then
         turnRate = turnRate * Config.DRIFT_TURN_BONUS
     end
-    
+
     -- Air penalty
     if not state.isGrounded then
         turnRate = Config.AIR_TURN_RATE
     end
-    
-    return math.rad(turnRate) -- Convert to radians
+
+    -- Convert to radians and multiply by dt for frame-rate independence
+    return math.rad(turnRate) * dt
 end
 
 local function updateGroundedState()
@@ -261,8 +280,8 @@ local function updateMovement(dt)
         while angleDiff > math.pi do angleDiff = angleDiff - (2 * math.pi) end
         while angleDiff < -math.pi do angleDiff = angleDiff + (2 * math.pi) end
         
-        -- Apply turn rate limit
-        local maxTurn = calculateTurnRate()
+        -- Apply turn rate limit (frame-rate independent)
+        local maxTurn = calculateTurnRate(dt)
         angleDiff = math.clamp(angleDiff, -maxTurn, maxTurn)
         state.facingAngle = state.facingAngle + angleDiff
     end
@@ -271,12 +290,14 @@ local function updateMovement(dt)
     local facingDir = Vector3.new(-math.sin(state.facingAngle), 0, -math.cos(state.facingAngle))
     local targetVelocity = facingDir * state.currentSpeed
     
-    -- Apply momentum (smoothing)
+    -- Apply momentum (smoothing) - frame-rate independent using exponential decay
+    -- At 60fps baseline, dt*60=1, so we get original behavior
+    local smoothing = 1 - math.pow(Config.MOMENTUM_FACTOR, dt * 60)
     if state.isGrounded then
-        state.velocity = state.velocity:Lerp(targetVelocity, 1 - Config.MOMENTUM_FACTOR)
+        state.velocity = state.velocity:Lerp(targetVelocity, smoothing)
     else
-        -- In air: limited control
-        local airInfluence = state.moveDirection * Config.AIR_CONTROL * state.currentSpeed
+        -- In air: limited control (also frame-rate independent)
+        local airInfluence = state.moveDirection * Config.AIR_CONTROL * state.currentSpeed * dt * 60
         state.velocity = Vector3.new(
             state.velocity.X + airInfluence.X,
             0, -- Y handled by humanoid
@@ -337,54 +358,120 @@ local function setupCharacter(character)
 end
 
 -- ============================================
--- UI (simple stamina display)
+-- UI (stamina and speed display)
 -- ============================================
-local function createStaminaUI()
+local function createUI()
     local screenGui = Instance.new("ScreenGui")
-    screenGui.Name = "StaminaUI"
+    screenGui.Name = "MountedMovementUI"
     screenGui.ResetOnSpawn = false
     screenGui.Parent = player.PlayerGui
-    
-    local frame = Instance.new("Frame")
-    frame.Name = "StaminaBar"
-    frame.Size = UDim2.new(0, 200, 0, 20)
-    frame.Position = UDim2.new(0.5, -100, 1, -50)
-    frame.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
-    frame.BorderSizePixel = 0
-    frame.Parent = screenGui
-    
-    local fill = Instance.new("Frame")
-    fill.Name = "Fill"
-    fill.Size = UDim2.new(1, 0, 1, 0)
-    fill.BackgroundColor3 = Color3.fromRGB(50, 200, 80)
-    fill.BorderSizePixel = 0
-    fill.Parent = frame
-    
-    local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(0, 4)
-    corner.Parent = frame
-    
-    local corner2 = Instance.new("UICorner")
-    corner2.CornerRadius = UDim.new(0, 4)
-    corner2.Parent = fill
-    
-    return fill
+
+    -- Container for both bars
+    local container = Instance.new("Frame")
+    container.Name = "Container"
+    container.Size = UDim2.new(0, 200, 0, 50)
+    container.Position = UDim2.new(0.5, -100, 1, -70)
+    container.BackgroundTransparency = 1
+    container.Parent = screenGui
+
+    -- Speed bar (top)
+    local speedFrame = Instance.new("Frame")
+    speedFrame.Name = "SpeedBar"
+    speedFrame.Size = UDim2.new(1, 0, 0, 12)
+    speedFrame.Position = UDim2.new(0, 0, 0, 0)
+    speedFrame.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+    speedFrame.BorderSizePixel = 0
+    speedFrame.Parent = container
+
+    local speedFill = Instance.new("Frame")
+    speedFill.Name = "Fill"
+    speedFill.Size = UDim2.new(0, 0, 1, 0)
+    speedFill.BackgroundColor3 = Color3.fromRGB(80, 150, 220)
+    speedFill.BorderSizePixel = 0
+    speedFill.Parent = speedFrame
+
+    local speedLabel = Instance.new("TextLabel")
+    speedLabel.Name = "Label"
+    speedLabel.Size = UDim2.new(1, 0, 1, 0)
+    speedLabel.BackgroundTransparency = 1
+    speedLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+    speedLabel.TextSize = 10
+    speedLabel.Font = Enum.Font.GothamBold
+    speedLabel.Text = "0"
+    speedLabel.Parent = speedFrame
+
+    -- Stamina bar (bottom)
+    local staminaFrame = Instance.new("Frame")
+    staminaFrame.Name = "StaminaBar"
+    staminaFrame.Size = UDim2.new(1, 0, 0, 20)
+    staminaFrame.Position = UDim2.new(0, 0, 0, 18)
+    staminaFrame.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+    staminaFrame.BorderSizePixel = 0
+    staminaFrame.Parent = container
+
+    local staminaFill = Instance.new("Frame")
+    staminaFill.Name = "Fill"
+    staminaFill.Size = UDim2.new(1, 0, 1, 0)
+    staminaFill.BackgroundColor3 = Color3.fromRGB(50, 200, 80)
+    staminaFill.BorderSizePixel = 0
+    staminaFill.Parent = staminaFrame
+
+    -- Corners for polish
+    for _, frame in ipairs({speedFrame, speedFill, staminaFrame, staminaFill}) do
+        local corner = Instance.new("UICorner")
+        corner.CornerRadius = UDim.new(0, 4)
+        corner.Parent = frame
+    end
+
+    -- Status indicators (sprint/drift)
+    local statusLabel = Instance.new("TextLabel")
+    statusLabel.Name = "Status"
+    statusLabel.Size = UDim2.new(1, 0, 0, 14)
+    statusLabel.Position = UDim2.new(0, 0, 0, 40)
+    statusLabel.BackgroundTransparency = 1
+    statusLabel.TextColor3 = Color3.fromRGB(200, 200, 200)
+    statusLabel.TextSize = 11
+    statusLabel.Font = Enum.Font.Gotham
+    statusLabel.Text = ""
+    statusLabel.Parent = container
+
+    return staminaFill, speedFill, speedLabel, statusLabel
 end
 
-local staminaFill = createStaminaUI()
+local staminaFill, speedFill, speedLabel, statusLabel = createUI()
 
 local function updateUI()
-    local ratio = state.stamina / Config.MAX_STAMINA
-    staminaFill.Size = UDim2.new(ratio, 0, 1, 0)
-    
-    -- Color feedback
+    -- Stamina bar
+    local staminaRatio = state.stamina / Config.MAX_STAMINA
+    staminaFill.Size = UDim2.new(staminaRatio, 0, 1, 0)
+
+    -- Stamina color feedback
     if state.penaltyTimer > 0 then
-        staminaFill.BackgroundColor3 = Color3.fromRGB(200, 50, 50) -- Red when penalized
-    elseif ratio < 0.3 then
-        staminaFill.BackgroundColor3 = Color3.fromRGB(200, 150, 50) -- Yellow when low
+        staminaFill.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+    elseif staminaRatio < 0.3 then
+        staminaFill.BackgroundColor3 = Color3.fromRGB(200, 150, 50)
     else
-        staminaFill.BackgroundColor3 = Color3.fromRGB(50, 200, 80) -- Green normally
+        staminaFill.BackgroundColor3 = Color3.fromRGB(50, 200, 80)
     end
+
+    -- Speed bar
+    local speedRatio = state.currentSpeed / Config.SPRINT_SPEED
+    speedFill.Size = UDim2.new(math.min(1, speedRatio), 0, 1, 0)
+    speedLabel.Text = string.format("%.0f", state.currentSpeed)
+
+    -- Speed color (blue to cyan when sprinting)
+    if state.isSprinting and state.currentSpeed > Config.BASE_SPEED then
+        speedFill.BackgroundColor3 = Color3.fromRGB(50, 200, 220)
+    else
+        speedFill.BackgroundColor3 = Color3.fromRGB(80, 150, 220)
+    end
+
+    -- Status text
+    local status = {}
+    if state.isSprinting then table.insert(status, "SPRINT") end
+    if state.isDrifting then table.insert(status, "DRIFT") end
+    if not state.isGrounded then table.insert(status, "AIR") end
+    statusLabel.Text = table.concat(status, " | ")
 end
 
 -- ============================================
@@ -395,11 +482,18 @@ bindInputs()
 if player.Character then
     setupCharacter(player.Character)
 end
+
 player.CharacterAdded:Connect(setupCharacter)
+player.CharacterRemoving:Connect(function()
+    unbindInputs()
+    state.character = nil
+    state.humanoid = nil
+    state.rootPart = nil
+end)
 
 RunService.RenderStepped:Connect(function(dt)
     if not state.humanoid then return end
-    
+
     updateStamina(dt)
     updateMovement(dt)
     handleJump()
