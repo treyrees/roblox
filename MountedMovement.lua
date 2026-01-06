@@ -455,7 +455,7 @@ local function tryBlink()
 
     -- Calculate blink destination
     local distance = params.blinkDistance or 18
-    local facingDir = Vector3.new(-math.sin(state.facingAngle), 0, -math.cos(state.facingAngle))
+    local facingDir = Vector3.new(math.sin(state.facingAngle), 0, math.cos(state.facingAngle))
     local currentPos = horse.PrimaryPart.Position
     local targetPos = currentPos + facingDir * distance
 
@@ -710,7 +710,7 @@ local function updateMovement(dt)
     state.turnRate = actualTurnRate
 
     -- Calculate velocity
-    local facingDir = Vector3.new(-math.sin(state.facingAngle), 0, -math.cos(state.facingAngle))
+    local facingDir = Vector3.new(math.sin(state.facingAngle), 0, math.cos(state.facingAngle))
     local targetVelocity = facingDir * state.currentSpeed
 
     -- Drift system
@@ -1078,10 +1078,9 @@ local function mount(horse)
     state.riderWeld.Parent = horseBody
 
     -- Initialize facing angle from horse orientation
-    -- Add 180 degrees (pi) because some horse models face the opposite direction
     local _, y, _ = horseBody.CFrame:ToEulerAnglesYXZ()
-    state.facingAngle = y + math.pi
-    state.cameraAngle = y + math.pi
+    state.facingAngle = y
+    state.cameraAngle = y
 
     -- Reset mounted state
     state.currentSpeed = 0
