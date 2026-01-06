@@ -40,8 +40,8 @@ local Config = {
     EMPTY_PENALTY_DURATION = 2, -- Seconds of penalty when emptied
 
     -- Turning (degrees per second for frame-rate independence)
-    BASE_TURN_RATE = 480,      -- Degrees per second at low speed
-    MIN_TURN_RATE = 100,       -- Degrees per second at max speed (harder to turn when fast)
+    BASE_TURN_RATE = 150,      -- Degrees per second at low speed (was 480, now more horse-like)
+    MIN_TURN_RATE = 60,        -- Degrees per second at max speed (harder to turn when fast)
     DRIFT_TURN_BONUS = 2.0,    -- Multiplier to turn rate while drifting (for aiming)
     DRIFT_RELEASE_RETAIN = 0.92, -- Speed retained when releasing drift (sharp turn)
     DRIFT_STAMINA_DRAIN = 8,   -- Additional stamina drain per second while drifting
