@@ -104,6 +104,7 @@ local state = {
     -- Double Jump
     canDoubleJump = false,     -- Whether double jump is available
     doubleJumpTurnTimer = 0,   -- Remaining enhanced air turn time
+    jumpGraceTimer = 0,        -- Grace period after jumping to prevent false landing detection
 
     -- References
     character = nil,
@@ -239,8 +240,8 @@ local function updateStamina(dt)
         draining = true
     end
     
-    -- Drift drain (additional)
-    if state.isDrifting and state.isSprinting and state.moveDirection.Magnitude > 0 then
+    -- Drift drain (additional, only when grounded to match turn bonus)
+    if state.isDrifting and state.isSprinting and state.isGrounded and state.moveDirection.Magnitude > 0 then
         state.stamina = state.stamina - (Config.DRIFT_STAMINA_DRAIN * dt)
         draining = true
     end
@@ -348,8 +349,9 @@ local function updateGroundedState()
     local result = workspace:Raycast(rayOrigin, rayDirection, rayParams)
     state.isGrounded = (result ~= nil)
 
-    -- Reset double jump state on landing
-    if state.isGrounded and not wasGrounded then
+    -- Reset double jump state on landing (but not during jump grace period)
+    -- The grace period prevents false landing detection right after jumping
+    if state.isGrounded and not wasGrounded and state.jumpGraceTimer <= 0 then
         state.canDoubleJump = false
         state.doubleJumpTurnTimer = 0
     end
@@ -360,6 +362,11 @@ local function updateMovement(dt)
 
     state.moveDirection = getMoveDirection()
     updateGroundedState()
+
+    -- Update jump grace timer (prevents false landing detection after jumping)
+    if state.jumpGraceTimer > 0 then
+        state.jumpGraceTimer = state.jumpGraceTimer - dt
+    end
 
     -- Update double jump turn timer
     if state.doubleJumpTurnTimer > 0 then
@@ -469,6 +476,7 @@ local function handleJump()
             )
             state.isGrounded = false
             state.canDoubleJump = true  -- Enable double jump
+            state.jumpGraceTimer = 0.15 -- Grace period to prevent false landing detection
         end
         return
     end
