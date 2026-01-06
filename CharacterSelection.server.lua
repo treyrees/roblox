@@ -41,173 +41,9 @@ end
 -- Track player character choices
 local playerCharacters = {} -- [player] = characterName
 
--- Default Roblox R15 Animate script animation IDs
-local DEFAULT_ANIMATIONS = {
-    idle = {
-        Animation1 = "rbxassetid://507766666",
-        Animation2 = "rbxassetid://507766951",
-    },
-    walk = "rbxassetid://507777826",
-    run = "rbxassetid://507767714",
-    jump = "rbxassetid://507765000",
-    fall = "rbxassetid://507767968",
-    climb = "rbxassetid://507765644",
-    swim = "rbxassetid://507784897",
-    swimidle = "rbxassetid://507785072",
-}
-
--- Create the Animate LocalScript for a character
-local function createAnimateScript(character)
-    local humanoid = character:FindFirstChildOfClass("Humanoid")
-    if not humanoid then return end
-
-    -- Check if Animate script already exists and is valid
-    local existingAnimate = character:FindFirstChild("Animate")
-    if existingAnimate and existingAnimate:IsA("LocalScript") then
-        -- Check if it has animation children (valid Animate script)
-        if existingAnimate:FindFirstChild("idle") or existingAnimate:FindFirstChild("walk") then
-            print("[CharacterSelection] Character already has valid Animate script")
-            return
-        else
-            -- Invalid Animate script, remove it
-            existingAnimate:Destroy()
-        end
-    end
-
-    -- Create new Animate script
-    local animate = Instance.new("LocalScript")
-    animate.Name = "Animate"
-
-    -- Create animation folders and values
-    local function createAnimationValue(name, animId, parent)
-        local anim = Instance.new("Animation")
-        anim.Name = name
-        anim.AnimationId = animId
-        anim.Parent = parent
-        return anim
-    end
-
-    local function createAnimationFolder(name, animations)
-        local folder = Instance.new("StringValue")
-        folder.Name = name
-        folder.Parent = animate
-
-        if type(animations) == "string" then
-            createAnimationValue(name .. "Anim", animations, folder)
-        elseif type(animations) == "table" then
-            for animName, animId in pairs(animations) do
-                createAnimationValue(animName, animId, folder)
-            end
-        end
-
-        return folder
-    end
-
-    -- Create all animation folders
-    createAnimationFolder("idle", DEFAULT_ANIMATIONS.idle)
-    createAnimationFolder("walk", DEFAULT_ANIMATIONS.walk)
-    createAnimationFolder("run", DEFAULT_ANIMATIONS.run)
-    createAnimationFolder("jump", DEFAULT_ANIMATIONS.jump)
-    createAnimationFolder("fall", DEFAULT_ANIMATIONS.fall)
-    createAnimationFolder("climb", DEFAULT_ANIMATIONS.climb)
-    createAnimationFolder("swim", DEFAULT_ANIMATIONS.swim)
-    createAnimationFolder("swimidle", DEFAULT_ANIMATIONS.swimidle)
-
-    -- The actual animation controller script
-    animate.Source = [[
--- Animate LocalScript (auto-generated)
-local character = script.Parent
-local humanoid = character:WaitForChild("Humanoid")
-local animator = humanoid:FindFirstChildOfClass("Animator") or Instance.new("Animator", humanoid)
-
-local animations = {}
-local currentTrack = nil
-local currentState = "idle"
-
--- Load all animations
-local function loadAnimations()
-    for _, folder in pairs(script:GetChildren()) do
-        if folder:IsA("StringValue") then
-            local animName = folder.Name
-            animations[animName] = {}
-            for _, anim in pairs(folder:GetChildren()) do
-                if anim:IsA("Animation") then
-                    local track = animator:LoadAnimation(anim)
-                    table.insert(animations[animName], track)
-                end
-            end
-        end
-    end
-end
-
-local function playAnimation(state, fadeTime)
-    fadeTime = fadeTime or 0.1
-
-    if currentState == state and currentTrack and currentTrack.IsPlaying then
-        return
-    end
-
-    -- Stop current animation
-    if currentTrack then
-        currentTrack:Stop(fadeTime)
-    end
-
-    -- Play new animation
-    currentState = state
-    local anims = animations[state]
-    if anims and #anims > 0 then
-        local anim = anims[math.random(1, #anims)]
-        anim:Play(fadeTime)
-        currentTrack = anim
-
-        -- Loop idle animations
-        if state == "idle" then
-            anim.Looped = true
-        end
-    end
-end
-
-local function onStateChanged(_, newState)
-    if newState == Enum.HumanoidStateType.Running then
-        -- Will be handled by Running event for speed detection
-    elseif newState == Enum.HumanoidStateType.Jumping then
-        playAnimation("jump", 0.1)
-    elseif newState == Enum.HumanoidStateType.Freefall then
-        playAnimation("fall", 0.2)
-    elseif newState == Enum.HumanoidStateType.Climbing then
-        playAnimation("climb", 0.1)
-    elseif newState == Enum.HumanoidStateType.Swimming then
-        playAnimation("swim", 0.2)
-    end
-end
-
-local function onRunning(speed)
-    if humanoid:GetState() == Enum.HumanoidStateType.Running then
-        if speed > 0.5 then
-            if speed > 10 then
-                playAnimation("run", 0.2)
-            else
-                playAnimation("walk", 0.2)
-            end
-        else
-            playAnimation("idle", 0.3)
-        end
-    end
-end
-
--- Initialize
-loadAnimations()
-
-humanoid.StateChanged:Connect(onStateChanged)
-humanoid.Running:Connect(onRunning)
-
--- Start with idle
-playAnimation("idle", 0)
-]]
-
-    animate.Parent = character
-    print("[CharacterSelection] Created Animate script for character")
-end
+-- Note: We don't create custom Animate scripts because LocalScript.Source
+-- doesn't execute at runtime. The default Roblox Animate script from
+-- StarterCharacterScripts handles animations automatically.
 
 -- Clone clothing and accessories from template to character
 local function applyAppearance(template, character)
@@ -217,9 +53,9 @@ local function applyAppearance(template, character)
         return
     end
 
-    -- Wait for humanoid to be ready
-    if not humanoid:IsDescendantOf(workspace) then
-        humanoid.AncestryChanged:Wait()
+    -- Wait for character to fully load
+    if not character:FindFirstChild("HumanoidRootPart") then
+        character:WaitForChild("HumanoidRootPart")
     end
 
     -- Remove ALL existing accessories first
@@ -229,43 +65,59 @@ local function applyAppearance(template, character)
         end
     end
 
-    -- Clone Shirt
-    local templateShirt = template:FindFirstChildOfClass("Shirt")
-    if templateShirt then
-        local existingShirt = character:FindFirstChildOfClass("Shirt")
-        if existingShirt then existingShirt:Destroy() end
+    -- Try to get HumanoidDescription from template (modern approach)
+    local templateHumanoid = template:FindFirstChildOfClass("Humanoid")
+    local templateDesc = templateHumanoid and templateHumanoid:FindFirstChildOfClass("HumanoidDescription")
 
-        local newShirt = templateShirt:Clone()
-        newShirt.Parent = character
-        print("[CharacterSelection] Applied Shirt:", newShirt.ShirtTemplate)
+    if templateDesc then
+        -- Use HumanoidDescription for clothing (keeps player's body/face)
+        local playerDesc = humanoid:GetAppliedDescription() or Instance.new("HumanoidDescription")
+
+        -- Only copy clothing-related properties, keep player's body
+        playerDesc.Shirt = templateDesc.Shirt
+        playerDesc.Pants = templateDesc.Pants
+        playerDesc.GraphicTShirt = templateDesc.GraphicTShirt
+
+        -- Apply the modified description
+        humanoid:ApplyDescription(playerDesc)
+        print("[CharacterSelection] Applied clothing via HumanoidDescription")
+    else
+        -- Fallback: Look for Shirt/Pants instances directly
+        local templateShirt = template:FindFirstChildOfClass("Shirt")
+        if templateShirt then
+            local existingShirt = character:FindFirstChildOfClass("Shirt")
+            if existingShirt then existingShirt:Destroy() end
+
+            local newShirt = templateShirt:Clone()
+            newShirt.Parent = character
+            print("[CharacterSelection] Applied Shirt:", newShirt.ShirtTemplate)
+        else
+            print("[CharacterSelection] No Shirt found in template")
+        end
+
+        local templatePants = template:FindFirstChildOfClass("Pants")
+        if templatePants then
+            local existingPants = character:FindFirstChildOfClass("Pants")
+            if existingPants then existingPants:Destroy() end
+
+            local newPants = templatePants:Clone()
+            newPants.Parent = character
+            print("[CharacterSelection] Applied Pants:", newPants.PantsTemplate)
+        else
+            print("[CharacterSelection] No Pants found in template")
+        end
+
+        local templateTShirt = template:FindFirstChildOfClass("ShirtGraphic")
+        if templateTShirt then
+            local existingTShirt = character:FindFirstChildOfClass("ShirtGraphic")
+            if existingTShirt then existingTShirt:Destroy() end
+
+            local newTShirt = templateTShirt:Clone()
+            newTShirt.Parent = character
+        end
     end
 
-    -- Clone Pants
-    local templatePants = template:FindFirstChildOfClass("Pants")
-    if templatePants then
-        local existingPants = character:FindFirstChildOfClass("Pants")
-        if existingPants then existingPants:Destroy() end
-
-        local newPants = templatePants:Clone()
-        newPants.Parent = character
-        print("[CharacterSelection] Applied Pants:", newPants.PantsTemplate)
-    end
-
-    -- Clone ShirtGraphic (T-Shirt)
-    local templateTShirt = template:FindFirstChildOfClass("ShirtGraphic")
-    if templateTShirt then
-        local existingTShirt = character:FindFirstChildOfClass("ShirtGraphic")
-        if existingTShirt then existingTShirt:Destroy() end
-
-        local newTShirt = templateTShirt:Clone()
-        newTShirt.Parent = character
-    end
-
-    -- NOTE: We keep the player's original BodyColors and face
-    -- This way the player is "dressing up" in the character's outfit
-    -- rather than completely replacing their appearance
-
-    -- Clone Accessories (do this last, after removing old ones)
+    -- Clone Accessories (works reliably via AddAccessory API)
     local accessoryCount = 0
     for _, item in pairs(template:GetChildren()) do
         if item:IsA("Accessory") then
@@ -301,9 +153,6 @@ local function spawnAsCharacter(player, characterName)
     -- Apply appearance from template
     applyAppearance(template, character)
 
-    -- Ensure Animate script exists
-    createAnimateScript(character)
-
     -- Notify client
     CharacterSelected:FireClient(player, characterName)
 
@@ -334,12 +183,8 @@ Players.PlayerAdded:Connect(function(player)
             local template = Characters:FindFirstChild(savedCharacter)
             if template then
                 applyAppearance(template, character)
-                createAnimateScript(character)
                 print("[CharacterSelection] Re-applied", savedCharacter, "appearance on respawn")
             end
-        else
-            -- Even without selection, ensure Animate script exists
-            createAnimateScript(character)
         end
     end)
 end)
@@ -351,10 +196,6 @@ end)
 
 -- For existing players (in case script loads after players join)
 for _, player in pairs(Players:GetPlayers()) do
-    if player.Character then
-        createAnimateScript(player.Character)
-    end
-
     player.CharacterAdded:Connect(function(character)
         task.wait(0.1)
 
@@ -363,10 +204,7 @@ for _, player in pairs(Players:GetPlayers()) do
             local template = Characters:FindFirstChild(savedCharacter)
             if template then
                 applyAppearance(template, character)
-                createAnimateScript(character)
             end
-        else
-            createAnimateScript(character)
         end
     end)
 end
