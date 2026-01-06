@@ -2,12 +2,13 @@
     MountedMovement.lua
     Horse-mounted racing movement with burst, body tilt, and double jump
 
-    Controls:
-    - WASD: Movement
-    - Shift: Sprint (hold)
+    Controls (Tank Style):
+    - W/S: Move forward/backward
+    - A/D: Turn left/right
+    - Shift: Sprint (hold, forward only)
     - Shift (double-tap): Burst (speed boost, costs stamina)
     - Space: Jump (press again in air for double jump with enhanced turning)
-    - Q: Drift (hold while turning)
+    - Q: Drift (hold to lock momentum, turn to aim, release for sharp turn)
 ]]
 
 local Players = game:GetService("Players")
@@ -34,15 +35,15 @@ local Config = {
     SPRINT_DRAIN = 15,         -- Per second while sprinting
     JUMP_COST = 20,            -- Flat cost per jump
     REGEN_MIN_RATE = 8,        -- Regen per second when stamina is low
-    REGEN_MAX_RATE = 25,       -- Regen per second when stamina is high (satisfying to top off)
+    REGEN_MAX_RATE = 45,       -- Regen per second when stamina is high (very fast top-off)
     REGEN_DELAY = 0.5,         -- Seconds before regen starts
     EMPTY_PENALTY_DURATION = 2, -- Seconds of penalty when emptied
 
     -- Turning (degrees per second for frame-rate independence)
-    BASE_TURN_RATE = 480,      -- Degrees per second at low speed
-    MIN_TURN_RATE = 100,       -- Degrees per second at max speed (harder to turn when fast)
-    DRIFT_TURN_BONUS = 2.0,    -- Multiplier to turn rate while drifting
-    DRIFT_SPEED_RETAIN = 0.85, -- Speed retention while drifting (vs braking)
+    BASE_TURN_RATE = 150,      -- Degrees per second at low speed (was 480, now more horse-like)
+    MIN_TURN_RATE = 60,        -- Degrees per second at max speed (harder to turn when fast)
+    DRIFT_TURN_BONUS = 2.0,    -- Multiplier to turn rate while drifting (for aiming)
+    DRIFT_RELEASE_RETAIN = 0.92, -- Speed retained when releasing drift (sharp turn)
     DRIFT_STAMINA_DRAIN = 8,   -- Additional stamina drain per second while drifting
     
     -- Jumping
@@ -68,6 +69,11 @@ local Config = {
     -- Body Tilt
     MAX_TILT_ANGLE = 15,       -- Maximum lean angle in degrees
     TILT_SPEED = 8,            -- How fast tilt responds (higher = snappier)
+
+    -- Camera Follow
+    CAMERA_DISTANCE = 12,      -- Distance behind horse
+    CAMERA_HEIGHT = 6,         -- Height above horse
+    CAMERA_SMOOTH = 8,         -- How fast camera follows (higher = snappier)
 }
 
 -- ============================================
@@ -75,10 +81,16 @@ local Config = {
 -- ============================================
 local state = {
     -- Input
-    moveDirection = Vector3.zero,
+    moveInput = 0,             -- Forward/back input (-1 to 1)
+    turnInput = 0,             -- Turn input (-1 = left, 1 = right)
     isSprinting = false,
     isDrifting = false,
     jumpRequested = false,
+
+    -- Drift (momentum-preserving turn prep)
+    wasDrifting = false,           -- Track previous frame's drift state (for release detection)
+    driftVelocityDir = Vector3.zero, -- Locked velocity direction while drifting
+    driftSpeed = 0,                -- Speed when drift started
     
     -- Physics
     currentSpeed = 0,
@@ -104,6 +116,10 @@ local state = {
     -- Double Jump
     canDoubleJump = false,     -- Whether double jump is available
     doubleJumpTurnTimer = 0,   -- Remaining enhanced air turn time
+    jumpGraceTimer = 0,        -- Grace period after jumping to prevent false landing detection
+
+    -- Camera
+    cameraAngle = 0,           -- Smoothed camera angle (follows facing)
 
     -- References
     character = nil,
@@ -177,35 +193,25 @@ local function unbindInputs()
     state.burstTimer = 0
 end
 
-local function getMoveDirection()
-    -- Camera-relative movement input
-    local forward = camera.CFrame.LookVector
-    local right = camera.CFrame.RightVector
-    
-    -- Flatten to horizontal plane
-    forward = Vector3.new(forward.X, 0, forward.Z).Unit
-    right = Vector3.new(right.X, 0, right.Z).Unit
-    
-    local direction = Vector3.zero
-    
+local function getInput()
+    -- Tank controls: W/S for forward/back, A/D for turning
+    local move = 0
+    local turn = 0
+
     if UserInputService:IsKeyDown(Enum.KeyCode.W) then
-        direction = direction + forward
+        move = move + 1
     end
     if UserInputService:IsKeyDown(Enum.KeyCode.S) then
-        direction = direction - forward
+        move = move - 1
     end
     if UserInputService:IsKeyDown(Enum.KeyCode.D) then
-        direction = direction + right
+        turn = turn - 1  -- D = turn right (negative rotation in Roblox coords)
     end
     if UserInputService:IsKeyDown(Enum.KeyCode.A) then
-        direction = direction - right
+        turn = turn + 1  -- A = turn left (positive rotation in Roblox coords)
     end
-    
-    if direction.Magnitude > 0 then
-        direction = direction.Unit
-    end
-    
-    return direction
+
+    return move, turn
 end
 
 -- ============================================
@@ -234,13 +240,13 @@ local function updateStamina(dt)
     local draining = false
 
     -- Sprint drain
-    if state.isSprinting and state.moveDirection.Magnitude > 0 and state.isGrounded then
+    if state.isSprinting and state.moveInput > 0 and state.isGrounded then
         state.stamina = state.stamina - (Config.SPRINT_DRAIN * dt)
         draining = true
     end
-    
-    -- Drift drain (additional)
-    if state.isDrifting and state.isSprinting and state.moveDirection.Magnitude > 0 then
+
+    -- Drift drain (additional, only when grounded to match turn bonus)
+    if state.isDrifting and state.isSprinting and state.isGrounded and state.moveInput > 0 then
         state.stamina = state.stamina - (Config.DRIFT_STAMINA_DRAIN * dt)
         draining = true
     end
@@ -264,9 +270,11 @@ local function updateStamina(dt)
     else
         state.regenTimer = math.max(0, state.regenTimer - dt)
         if state.regenTimer <= 0 and state.penaltyTimer <= 0 then
-            -- Progressive regen: slower when empty, faster when nearly full
+            -- Exponential regen: slow when empty, very fast when nearly full
             local staminaRatio = state.stamina / Config.MAX_STAMINA
-            local regenRate = Config.REGEN_MIN_RATE + (staminaRatio * (Config.REGEN_MAX_RATE - Config.REGEN_MIN_RATE))
+            -- Use exponential curve (ratio^2) for more aggressive high-stamina regen
+            local curve = staminaRatio * staminaRatio
+            local regenRate = Config.REGEN_MIN_RATE + (curve * (Config.REGEN_MAX_RATE - Config.REGEN_MIN_RATE))
             state.stamina = math.min(Config.MAX_STAMINA, state.stamina + (regenRate * dt))
         end
     end
@@ -276,14 +284,15 @@ end
 -- MOVEMENT PHYSICS
 -- ============================================
 local function calculateTargetSpeed()
-    if state.moveDirection.Magnitude == 0 then
+    -- No forward/back input = no speed
+    if state.moveInput == 0 then
         return 0
     end
 
     local target = Config.BASE_SPEED
 
-    -- Sprint speed (only if stamina available)
-    if state.isSprinting and state.stamina > 0 and state.penaltyTimer <= 0 then
+    -- Sprint speed (only if stamina available and moving forward)
+    if state.isSprinting and state.stamina > 0 and state.penaltyTimer <= 0 and state.moveInput > 0 then
         target = Config.SPRINT_SPEED
     end
 
@@ -297,9 +306,9 @@ local function calculateTargetSpeed()
         target = target * Config.EMPTY_STAMINA_PENALTY
     end
 
-    -- Drift speed retention (slower than full sprint, faster than braking)
-    if state.isDrifting and state.isSprinting and not state.isBursting then
-        target = target * Config.DRIFT_SPEED_RETAIN
+    -- Backward movement is slower
+    if state.moveInput < 0 then
+        target = target * 0.5
     end
 
     return target
@@ -348,8 +357,9 @@ local function updateGroundedState()
     local result = workspace:Raycast(rayOrigin, rayDirection, rayParams)
     state.isGrounded = (result ~= nil)
 
-    -- Reset double jump state on landing
-    if state.isGrounded and not wasGrounded then
+    -- Reset double jump state on landing (but not during jump grace period)
+    -- The grace period prevents false landing detection right after jumping
+    if state.isGrounded and not wasGrounded and state.jumpGraceTimer <= 0 then
         state.canDoubleJump = false
         state.doubleJumpTurnTimer = 0
     end
@@ -358,17 +368,23 @@ end
 local function updateMovement(dt)
     if not state.rootPart or not state.humanoid then return end
 
-    state.moveDirection = getMoveDirection()
+    -- Get tank control input (W/S = move, A/D = turn)
+    state.moveInput, state.turnInput = getInput()
     updateGroundedState()
+
+    -- Update jump grace timer (prevents false landing detection after jumping)
+    if state.jumpGraceTimer > 0 then
+        state.jumpGraceTimer = state.jumpGraceTimer - dt
+    end
 
     -- Update double jump turn timer
     if state.doubleJumpTurnTimer > 0 then
         state.doubleJumpTurnTimer = state.doubleJumpTurnTimer - dt
     end
-    
+
     -- Target speed
     local targetSpeed = calculateTargetSpeed()
-    
+
     -- Accelerate/decelerate toward target
     if targetSpeed > state.currentSpeed then
         state.currentSpeed = state.currentSpeed + (Config.ACCELERATION * dt * (targetSpeed - state.currentSpeed))
@@ -376,41 +392,63 @@ local function updateMovement(dt)
         state.currentSpeed = state.currentSpeed - (Config.DECELERATION * dt * (state.currentSpeed - targetSpeed))
     end
     state.currentSpeed = math.max(0, state.currentSpeed)
-    
-    -- Turning (only when moving)
+
+    -- Turning (tank controls: A/D directly control rotation)
     local actualTurnRate = 0
-    if state.moveDirection.Magnitude > 0 then
-        local targetAngle = math.atan2(-state.moveDirection.X, -state.moveDirection.Z)
-        local angleDiff = targetAngle - state.facingAngle
-
-        -- Normalize angle difference to [-pi, pi]
-        while angleDiff > math.pi do angleDiff = angleDiff - (2 * math.pi) end
-        while angleDiff < -math.pi do angleDiff = angleDiff + (2 * math.pi) end
-
-        -- Apply turn rate limit (frame-rate independent)
+    if state.turnInput ~= 0 then
+        -- Get max turn rate for current state
         local maxTurn = calculateTurnRate(dt)
-        angleDiff = math.clamp(angleDiff, -maxTurn, maxTurn)
-        state.facingAngle = state.facingAngle + angleDiff
+        local turnAmount = state.turnInput * maxTurn
+
+        state.facingAngle = state.facingAngle + turnAmount
 
         -- Track turn rate for tilt (radians per second)
         if dt > 0 then
-            actualTurnRate = angleDiff / dt
+            actualTurnRate = turnAmount / dt
         end
     end
     state.turnRate = actualTurnRate
-    
+
     -- Calculate velocity from facing angle and speed
     local facingDir = Vector3.new(-math.sin(state.facingAngle), 0, -math.cos(state.facingAngle))
     local targetVelocity = facingDir * state.currentSpeed
-    
+
+    -- Drift system: momentum-preserving turn preparation
+    local activeDrift = state.isDrifting and state.isSprinting and state.isGrounded and not state.isBursting
+
+    -- Drift start: lock in current velocity direction
+    if activeDrift and not state.wasDrifting then
+        if state.velocity.Magnitude > 0.1 then
+            state.driftVelocityDir = state.velocity.Unit
+        else
+            state.driftVelocityDir = facingDir
+        end
+        state.driftSpeed = state.currentSpeed
+    end
+
+    -- Drift release: snap to new facing direction with speed retention
+    if state.wasDrifting and not activeDrift and state.driftSpeed > 0 then
+        local retainedSpeed = state.driftSpeed * Config.DRIFT_RELEASE_RETAIN
+        state.velocity = facingDir * retainedSpeed
+        state.currentSpeed = retainedSpeed
+        state.driftSpeed = 0
+    end
+
+    state.wasDrifting = activeDrift
+
     -- Apply momentum (smoothing) - frame-rate independent using exponential decay
     -- At 60fps baseline, dt*60=1, so we get original behavior
     local smoothing = 1 - math.pow(Config.MOMENTUM_FACTOR, dt * 60)
     if state.isGrounded then
-        state.velocity = state.velocity:Lerp(targetVelocity, smoothing)
+        if activeDrift then
+            -- While drifting: keep velocity in locked direction, model turns freely
+            state.velocity = state.driftVelocityDir * state.currentSpeed
+        else
+            state.velocity = state.velocity:Lerp(targetVelocity, smoothing)
+        end
     else
-        -- In air: limited control (also frame-rate independent)
-        local airInfluence = state.moveDirection * Config.AIR_CONTROL * state.currentSpeed * dt * 60
+        -- In air: limited control using facing direction
+        local airInfluence = facingDir * state.turnInput * Config.AIR_CONTROL * state.currentSpeed * dt * 60
         state.velocity = Vector3.new(
             state.velocity.X + airInfluence.X,
             0, -- Y handled by humanoid
@@ -469,6 +507,7 @@ local function handleJump()
             )
             state.isGrounded = false
             state.canDoubleJump = true  -- Enable double jump
+            state.jumpGraceTimer = 0.15 -- Grace period to prevent false landing detection
         end
         return
     end
@@ -512,7 +551,8 @@ local function setupCharacter(character)
     -- Initialize facing angle from current orientation
     local _, y, _ = state.rootPart.CFrame:ToEulerAnglesYXZ()
     state.facingAngle = y
-    
+    state.cameraAngle = y  -- Start camera behind horse
+
     -- Reset state
     state.currentSpeed = 0
     state.stamina = Config.MAX_STAMINA
@@ -657,9 +697,43 @@ local function updateUI()
 end
 
 -- ============================================
+-- CAMERA FOLLOW
+-- ============================================
+local function updateCamera(dt)
+    if not state.rootPart then return end
+
+    -- Smoothly follow the horse's facing angle
+    local angleDiff = state.facingAngle - state.cameraAngle
+
+    -- Normalize angle difference to [-pi, pi]
+    while angleDiff > math.pi do angleDiff = angleDiff - (2 * math.pi) end
+    while angleDiff < -math.pi do angleDiff = angleDiff + (2 * math.pi) end
+
+    -- Smooth camera rotation
+    local smoothing = 1 - math.exp(-Config.CAMERA_SMOOTH * dt)
+    state.cameraAngle = state.cameraAngle + angleDiff * smoothing
+
+    -- Calculate camera position behind horse
+    local horsePos = state.rootPart.Position
+    local behindOffset = Vector3.new(
+        math.sin(state.cameraAngle) * Config.CAMERA_DISTANCE,
+        Config.CAMERA_HEIGHT,
+        math.cos(state.cameraAngle) * Config.CAMERA_DISTANCE
+    )
+
+    local cameraPos = horsePos + behindOffset
+    local lookAt = horsePos + Vector3.new(0, 2, 0)  -- Look at horse's upper body
+
+    camera.CFrame = CFrame.lookAt(cameraPos, lookAt)
+end
+
+-- ============================================
 -- MAIN LOOP
 -- ============================================
 bindInputs()
+
+-- Set camera to Scriptable for manual control
+camera.CameraType = Enum.CameraType.Scriptable
 
 if player.Character then
     setupCharacter(player.Character)
@@ -668,6 +742,7 @@ end
 player.CharacterAdded:Connect(setupCharacter)
 player.CharacterRemoving:Connect(function()
     unbindInputs()
+    camera.CameraType = Enum.CameraType.Custom  -- Restore default camera
     state.character = nil
     state.humanoid = nil
     state.rootPart = nil
@@ -680,5 +755,6 @@ RunService.RenderStepped:Connect(function(dt)
     updateStamina(dt)
     updateMovement(dt)
     handleJump()
+    updateCamera(dt)
     updateUI()
 end)
