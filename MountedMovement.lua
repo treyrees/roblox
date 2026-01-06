@@ -305,8 +305,14 @@ local function updateMovement(dt)
         )
     end
     
-    -- Apply to humanoid
-    state.humanoid:Move(state.velocity / Config.BASE_SPEED, false)
+    -- Apply to humanoid - set WalkSpeed dynamically for actual speed changes
+    state.humanoid.WalkSpeed = state.currentSpeed
+    local moveDir = state.velocity.Unit
+    if state.velocity.Magnitude > 0.1 then
+        state.humanoid:Move(moveDir, false)
+    else
+        state.humanoid:Move(Vector3.zero, false)
+    end
     
     -- Rotate character to face movement direction
     if state.currentSpeed > 1 then
