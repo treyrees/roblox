@@ -171,10 +171,12 @@ local function updateStamina(dt)
         draining = true
     end
     
-    -- Check for empty
+    -- Check for empty (only trigger penalty once when first hitting 0)
     if state.stamina <= 0 then
+        if state.penaltyTimer <= 0 then
+            state.penaltyTimer = Config.EMPTY_PENALTY_DURATION
+        end
         state.stamina = 0
-        state.penaltyTimer = Config.EMPTY_PENALTY_DURATION
     end
     
     -- Penalty countdown
