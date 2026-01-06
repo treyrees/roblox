@@ -668,8 +668,40 @@ local function updateGroundedState()
     local rayParams = RaycastParams.new()
     rayParams.FilterDescendantsInstances = {horse, state.character}
     rayParams.FilterType = Enum.RaycastFilterType.Exclude
+    rayParams.RespectCanCollide = true
 
     local result = workspace:Raycast(rayOrigin, rayDirection, rayParams)
+
+    -- If raycast didn't hit, also check terrain voxels directly
+    if not result then
+        local terrain = workspace.Terrain
+        if terrain then
+            local checkPos = rayOrigin + Vector3.new(0, -3, 0)
+            local region = Region3.new(
+                checkPos - Vector3.new(2, 2, 2),
+                checkPos + Vector3.new(2, 2, 2)
+            ):ExpandToGrid(4)
+
+            local materials, occupancies = terrain:ReadVoxels(region, 4)
+            local size = materials.Size
+
+            for x = 1, size.X do
+                for y = 1, size.Y do
+                    for z = 1, size.Z do
+                        local material = materials[x][y][z]
+                        local occupancy = occupancies[x][y][z]
+                        if material ~= Enum.Material.Air and material ~= Enum.Material.Water and occupancy > 0.5 then
+                            result = true  -- Terrain found below
+                            break
+                        end
+                    end
+                    if result then break end
+                end
+                if result then break end
+            end
+        end
+    end
+
     state.isGrounded = (result ~= nil)
 
     -- Reset double jump on landing
@@ -693,6 +725,7 @@ local function checkWallCollision(horse, movementDir, distance)
     local rayParams = RaycastParams.new()
     rayParams.FilterDescendantsInstances = {horse, state.character}
     rayParams.FilterType = Enum.RaycastFilterType.Exclude
+    rayParams.RespectCanCollide = true  -- Respect CanCollide property of parts
 
     -- Check at multiple heights to prevent jumping over fences
     for _, heightOffset in ipairs(Config.WALL_CHECK_HEIGHTS) do
@@ -701,8 +734,36 @@ local function checkWallCollision(horse, movementDir, distance)
 
         local result = workspace:Raycast(rayOrigin, rayDir, rayParams)
         if result then
-            -- Wall detected at this height
+            -- Wall detected at this height (could be a part or terrain)
             return true, result.Position, result.Normal
+        end
+    end
+
+    -- Also check terrain specifically using ReadVoxels for more reliable terrain collision
+    local terrain = workspace.Terrain
+    if terrain then
+        for _, heightOffset in ipairs(Config.WALL_CHECK_HEIGHTS) do
+            local checkPos = basePos + Vector3.new(0, heightOffset, 0) + Vector3.new(normalizedDir.X, 0, normalizedDir.Z) * checkDistance
+            local region = Region3.new(
+                checkPos - Vector3.new(2, 2, 2),
+                checkPos + Vector3.new(2, 2, 2)
+            ):ExpandToGrid(4)
+
+            local materials, occupancies = terrain:ReadVoxels(region, 4)
+            local size = materials.Size
+
+            for x = 1, size.X do
+                for y = 1, size.Y do
+                    for z = 1, size.Z do
+                        local material = materials[x][y][z]
+                        local occupancy = occupancies[x][y][z]
+                        -- Check if terrain is solid (not air or water) and has significant occupancy
+                        if material ~= Enum.Material.Air and material ~= Enum.Material.Water and occupancy > 0.5 then
+                            return true, checkPos, -normalizedDir
+                        end
+                    end
+                end
+            end
         end
     end
 
@@ -822,10 +883,51 @@ local function updateMovement(dt)
         local rayParams = RaycastParams.new()
         rayParams.FilterDescendantsInstances = {horse, state.character}
         rayParams.FilterType = Enum.RaycastFilterType.Exclude
+        rayParams.RespectCanCollide = true
 
         local result = workspace:Raycast(currentPos, Vector3.new(0, verticalMovement - 0.5, 0), rayParams)
+
+        -- Also check terrain voxels for landing on terrain bridges
+        local terrainLandingY = nil
+        if not result then
+            local terrain = workspace.Terrain
+            if terrain then
+                local checkPos = currentPos + Vector3.new(0, verticalMovement - 0.5, 0)
+                local region = Region3.new(
+                    checkPos - Vector3.new(2, 2, 2),
+                    checkPos + Vector3.new(2, 2, 2)
+                ):ExpandToGrid(4)
+
+                local materials, occupancies = terrain:ReadVoxels(region, 4)
+                local size = materials.Size
+                local regionStart = region.CFrame.Position - region.Size / 2
+
+                for x = 1, size.X do
+                    for y = 1, size.Y do
+                        for z = 1, size.Z do
+                            local material = materials[x][y][z]
+                            local occupancy = occupancies[x][y][z]
+                            if material ~= Enum.Material.Air and material ~= Enum.Material.Water and occupancy > 0.5 then
+                                -- Calculate the Y position of this voxel
+                                local voxelY = regionStart.Y + (y - 0.5) * 4
+                                if not terrainLandingY or voxelY > terrainLandingY then
+                                    terrainLandingY = voxelY
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+
         if result then
             verticalMovement = result.Position.Y - currentPos.Y + 2 -- Keep horse above ground
+            state.verticalVelocity = 0
+            state.isGrounded = true
+            state.canDoubleJump = false
+            state.doubleJumpTurnTimer = 0
+        elseif terrainLandingY then
+            verticalMovement = terrainLandingY - currentPos.Y + 2 -- Keep horse above terrain
             state.verticalVelocity = 0
             state.isGrounded = true
             state.canDoubleJump = false
