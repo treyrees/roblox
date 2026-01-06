@@ -74,6 +74,10 @@ local Config = {
     -- Feel
     MOMENTUM_FACTOR = 0.92,    -- How much velocity carries frame-to-frame (0.9-0.99)
 
+    -- Wall Collision
+    WALL_CHECK_DISTANCE = 3,   -- How far ahead to check for walls
+    WALL_CHECK_HEIGHTS = {0, 3, 6, 9, 12}, -- Heights to raycast at (covers full fence height)
+
     -- Burst (double-tap sprint)
     BURST_SPEED_MULT = 1.4,    -- Speed multiplier during burst (1.4x sprint)
     BURST_DURATION = 1.5,      -- How long burst lasts (seconds)
@@ -676,6 +680,35 @@ local function updateGroundedState()
     end
 end
 
+-- Check for wall collision in the movement direction
+-- Returns true if movement is blocked, false if clear
+local function checkWallCollision(horse, movementDir, distance)
+    if not horse or not horse.PrimaryPart then return false end
+    if movementDir.Magnitude < 0.01 then return false end
+
+    local basePos = horse.PrimaryPart.Position
+    local normalizedDir = movementDir.Unit
+    local checkDistance = math.max(distance, Config.WALL_CHECK_DISTANCE)
+
+    local rayParams = RaycastParams.new()
+    rayParams.FilterDescendantsInstances = {horse, state.character}
+    rayParams.FilterType = Enum.RaycastFilterType.Exclude
+
+    -- Check at multiple heights to prevent jumping over fences
+    for _, heightOffset in ipairs(Config.WALL_CHECK_HEIGHTS) do
+        local rayOrigin = basePos + Vector3.new(0, heightOffset, 0)
+        local rayDir = Vector3.new(normalizedDir.X, 0, normalizedDir.Z) * checkDistance
+
+        local result = workspace:Raycast(rayOrigin, rayDir, rayParams)
+        if result then
+            -- Wall detected at this height
+            return true, result.Position, result.Normal
+        end
+    end
+
+    return false
+end
+
 local function updateMovement(dt)
     local horse = state.currentHorse
     if not horse or not horse.PrimaryPart then return end
@@ -770,6 +803,19 @@ local function updateMovement(dt)
     local currentPos = horse.PrimaryPart.Position
     local movement = state.velocity * dt
     local verticalMovement = state.verticalVelocity * dt
+
+    -- Wall collision check - prevent moving into fences/walls
+    -- This checks at multiple heights so players can't jump over fences
+    local horizontalMovement = Vector3.new(movement.X, 0, movement.Z)
+    if horizontalMovement.Magnitude > 0.001 then
+        local isBlocked = checkWallCollision(horse, horizontalMovement, horizontalMovement.Magnitude + 1)
+        if isBlocked then
+            -- Stop horizontal movement and velocity when hitting a wall
+            movement = Vector3.new(0, 0, 0)
+            state.velocity = Vector3.zero
+            state.currentSpeed = 0
+        end
+    end
 
     -- Ground check for landing (skip during grace period to prevent false landings)
     if state.verticalVelocity < 0 and state.jumpGraceTimer <= 0 then
