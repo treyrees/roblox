@@ -43,16 +43,50 @@ local CharacterData = {
         },
     },
 
-    -- Johnny Joestar - Launch Jump
-    -- Jumping during burst is supercharged
+    -- Johnny Joestar - Drift Surge
+    -- Exiting drift gives a speed boost
     Johnny = {
         displayName = "Johnny Joestar",
-        description = "Explosive aerial potential. Combine burst with jumps for massive air.",
-        ability = "Launch Jump",
-        abilityDescription = "Jumping during burst launches you with supercharged power",
+        description = "Technical precision. Drifts build into devastating straightaway bursts.",
+        ability = "Drift Surge",
+        abilityDescription = "Exiting drift grants a speed boost based on drift duration",
         modelName = "Johnny",
 
         portraitColor = Color3.fromRGB(80, 120, 200), -- Blue theme
+
+        stats = {
+            -- Drift specialization
+            DRIFT_TURN_BONUS = 2.5,     -- Tighter drift turning
+            DRIFT_STAMINA_DRAIN = 5,    -- Lower drift stamina cost
+            DRIFT_RELEASE_RETAIN = 0.98, -- Keep more speed on drift exit
+
+            -- Balanced stats
+            BASE_SPEED = 40,
+            SPRINT_SPEED = 82,
+            MAX_STAMINA = 95,
+
+            -- Good acceleration for drift exits
+            ACCELERATION = 1.3,
+        },
+
+        abilityParams = {
+            driftBoostBase = 1.15,      -- Minimum boost on drift exit
+            driftBoostMax = 1.4,        -- Maximum boost after long drift
+            driftBoostDuration = 1.2,   -- How long the boost lasts
+            driftTimeForMaxBoost = 1.5, -- Seconds of drifting for max boost
+        },
+    },
+
+    -- Diego Brando - Launch Jump
+    -- Jumping during burst is supercharged
+    Diego = {
+        displayName = "Diego Brando",
+        description = "Predatory aerial hunter. Combine burst with jumps for explosive air.",
+        ability = "Launch Jump",
+        abilityDescription = "Jumping during burst launches you with supercharged power",
+        modelName = "Diego",
+
+        portraitColor = Color3.fromRGB(200, 160, 60), -- Gold/yellow theme
 
         stats = {
             -- Jump-focused
@@ -63,55 +97,22 @@ local CharacterData = {
             AIR_CONTROL = 0.2,          -- Better air control
             DOUBLE_JUMP_TURN_RATE = 140, -- Better air turning
 
-            -- Burst synergy
+            -- Aggressive ground speed
+            SPRINT_SPEED = 85,          -- Faster sprint
+            BASE_SPEED = 42,            -- Faster base
+
+            -- Burst synergy for jump combos
             BURST_DURATION = 1.3,       -- Shorter burst window
             BURST_COOLDOWN = 2.5,       -- Faster cooldown for more burst-jump combos
 
-            -- Slightly lower ground stats
-            BASE_SPEED = 38,
-            SPRINT_SPEED = 76,
-            MAX_STAMINA = 95,
+            -- Trade-off: lower stamina
+            MAX_STAMINA = 90,
         },
 
         abilityParams = {
             burstJumpMult = 1.8,        -- Jump power multiplier during burst
             burstDoubleJumpMult = 2.0,  -- Double jump is even more boosted
             launchSpeedBoost = 1.2,     -- Horizontal speed boost on burst-jump
-        },
-    },
-
-    -- Diego Brando - Drift Surge
-    -- Exiting drift gives a speed boost
-    Diego = {
-        displayName = "Diego Brando",
-        description = "Predatory corner speed. Drifts build into devastating straightaway bursts.",
-        ability = "Drift Surge",
-        abilityDescription = "Exiting drift grants a speed boost based on drift duration",
-        modelName = "Diego",
-
-        portraitColor = Color3.fromRGB(200, 160, 60), -- Gold/yellow theme
-
-        stats = {
-            -- Drift specialization
-            DRIFT_TURN_BONUS = 2.5,     -- Tighter drift turning
-            DRIFT_STAMINA_DRAIN = 5,    -- Lower drift stamina cost
-            DRIFT_RELEASE_RETAIN = 0.98, -- Keep more speed on drift exit
-
-            -- Aggressive stats
-            SPRINT_SPEED = 85,          -- Faster sprint
-            BASE_SPEED = 42,            -- Faster base
-            ACCELERATION = 1.4,         -- Quicker acceleration
-
-            -- Trade-off: lower stamina
-            MAX_STAMINA = 90,
-            SPRINT_DRAIN = 18,          -- Drains faster
-        },
-
-        abilityParams = {
-            driftBoostBase = 1.15,      -- Minimum boost on drift exit
-            driftBoostMax = 1.4,        -- Maximum boost after long drift
-            driftBoostDuration = 1.2,   -- How long the boost lasts
-            driftTimeForMaxBoost = 1.5, -- Seconds of drifting for max boost
         },
     },
 

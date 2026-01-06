@@ -381,20 +381,20 @@ local function getGyroBurstTurnBonus()
     return characterData.abilityParams.burstTurnBonus or 1.5
 end
 
--- Johnny: Launch Jump - supercharged jumps during burst
-local function getJohnnyJumpMultiplier()
-    if characterData.id ~= "Johnny" or not state.isBursting then return 1 end
+-- Diego: Launch Jump - supercharged jumps during burst
+local function getDiegoJumpMultiplier()
+    if characterData.id ~= "Diego" or not state.isBursting then return 1 end
     return characterData.abilityParams.burstJumpMult or 1.8
 end
 
-local function getJohnnyDoubleJumpMultiplier()
-    if characterData.id ~= "Johnny" or not state.isBursting then return 1 end
+local function getDiegoDoubleJumpMultiplier()
+    if characterData.id ~= "Diego" or not state.isBursting then return 1 end
     return characterData.abilityParams.burstDoubleJumpMult or 2.0
 end
 
--- Diego: Drift Surge - speed boost on drift exit
-local function updateDiegoAbility(dt)
-    if characterData.id ~= "Diego" then return end
+-- Johnny: Drift Surge - speed boost on drift exit
+local function updateJohnnyAbility(dt)
+    if characterData.id ~= "Johnny" then return end
 
     local params = characterData.abilityParams
 
@@ -428,8 +428,8 @@ local function updateDiegoAbility(dt)
     end
 end
 
-local function getDiegoDriftSurgeMultiplier()
-    if characterData.id ~= "Diego" or not abilityState.driftSurgeActive then return 1 end
+local function getJohnnyDriftSurgeMultiplier()
+    if characterData.id ~= "Johnny" or not abilityState.driftSurgeActive then return 1 end
     return abilityState.driftSurgeSpeedMult
 end
 
@@ -600,8 +600,8 @@ local function calculateTargetSpeed()
         target = Config.SPRINT_SPEED * burstMult
     end
 
-    -- Diego: Apply drift surge multiplier
-    target = target * getDiegoDriftSurgeMultiplier()
+    -- Johnny: Apply drift surge multiplier
+    target = target * getJohnnyDriftSurgeMultiplier()
 
     if state.penaltyTimer > 0 then
         target = target * Config.EMPTY_STAMINA_PENALTY
@@ -799,12 +799,12 @@ local function handleJump()
             state.stamina = state.stamina - Config.JUMP_COST
         end
 
-        -- Johnny: Supercharged jump during burst
-        local jumpPower = Config.JUMP_POWER * getJohnnyJumpMultiplier()
+        -- Diego: Supercharged jump during burst
+        local jumpPower = Config.JUMP_POWER * getDiegoJumpMultiplier()
         state.verticalVelocity = jumpPower
 
-        -- Johnny: Also boost horizontal speed during burst jump
-        if characterData.id == "Johnny" and state.isBursting then
+        -- Diego: Also boost horizontal speed during burst jump
+        if characterData.id == "Diego" and state.isBursting then
             local params = characterData.abilityParams
             local speedBoost = params.launchSpeedBoost or 1.2
             state.currentSpeed = state.currentSpeed * speedBoost
@@ -823,8 +823,8 @@ local function handleJump()
             state.stamina = state.stamina - Config.DOUBLE_JUMP_COST
         end
 
-        -- Johnny: Even more supercharged double jump during burst
-        local doubleJumpPower = Config.DOUBLE_JUMP_POWER * getJohnnyDoubleJumpMultiplier()
+        -- Diego: Even more supercharged double jump during burst
+        local doubleJumpPower = Config.DOUBLE_JUMP_POWER * getDiegoDoubleJumpMultiplier()
         state.verticalVelocity = doubleJumpPower
         state.canDoubleJump = false
         state.doubleJumpTurnTimer = Config.DOUBLE_JUMP_TURN_DURATION
@@ -965,7 +965,7 @@ local function updateUI()
     end
 
     -- Character-specific ability status
-    if characterData.id == "Diego" and abilityState.driftSurgeActive then
+    if characterData.id == "Johnny" and abilityState.driftSurgeActive then
         table.insert(status, string.format("SURGE:%.1f", abilityState.driftSurgeTimer))
     end
     if characterData.id == "HotPants" then
@@ -1171,7 +1171,7 @@ RunService.RenderStepped:Connect(function(dt)
     updateStamina(dt)
 
     -- Character abilities (before movement so they can affect speed)
-    updateDiegoAbility(dt)
+    updateJohnnyAbility(dt)
     updateBlinkCooldown(dt)
     updateSandmanAbility(dt)
 
